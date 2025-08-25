@@ -23,7 +23,7 @@ def create_test_image(width=1920, height=1080):
     try:
         # Try to use a default font
         font = ImageFont.load_default()
-    except:
+    except Exception:
         font = None
     
     # Draw a test pattern
@@ -115,7 +115,7 @@ def simulate_client():
     finally:
         try:
             sock.close()
-        except:
+        except Exception:
             pass
 
 if __name__ == "__main__":

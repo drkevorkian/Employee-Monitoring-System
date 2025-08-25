@@ -20,7 +20,7 @@ def create_simple_test_image(width=1920, height=1080):
     # Add some test content
     try:
         font = ImageFont.load_default()
-    except:
+    except Exception:
         font = None
     
     # Draw a simple pattern
@@ -121,7 +121,7 @@ def test_fullscreen_functionality():
         try:
             sock.close()
             print("✓ Connection closed")
-        except:
+        except Exception:
             pass
 
 if __name__ == "__main__":

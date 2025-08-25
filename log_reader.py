@@ -165,7 +165,7 @@ class LogReader(QMainWindow):
                 if log_type == "All Logs":
                     # Get all log files
                     log_files = glob.glob(os.path.join(comp_dir, "*.log"))
-                    log_files.extend(glob.glob(os.path.join(comp_dir, "*", "*.log")))
+                    log_files.extend(glob.glob(os.path.join(comp_dir, "*", "*.log"))) 
                 else:
                     # Get specific log type files
                     type_dir = os.path.join(comp_dir, log_type.lower())

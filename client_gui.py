@@ -541,7 +541,7 @@ class MessagePopupWidget(QWidget):
             # Mark as read when popup closes
             self._send_message_status('read')
             self._update_status_checks('read')
-        except:
+        except Exception:
             pass
         super().closeEvent(event)
 
@@ -1111,7 +1111,7 @@ class MonitoringClient:
                         if self.socket:
                             try:
                                 self.socket.close()
-                            except:
+                            except Exception:
                                 pass
                             self.socket = None
                     else:
@@ -1763,7 +1763,7 @@ class MonitoringClient:
         try:
             # Check for null bytes or non-printable characters
             return b'\x00' in content or not content.decode('utf-8', errors='ignore').isprintable()
-        except:
+        except Exception:
             return True
     
     def _handle_file_delete(self, file_path: str, command: Dict[str, Any]) -> bool:
@@ -1990,7 +1990,7 @@ class ClientMainWindow(QMainWindow):
         # Set window icon
         try:
             self.setWindowIcon(QIcon("icon.png"))
-        except:
+        except Exception:
             pass
         
         # Create central widget
@@ -2239,14 +2239,14 @@ class ClientMainWindow(QMainWindow):
             # Set icon - try to use a default system icon if custom icon not found
             try:
                 self.tray_icon.setIcon(QIcon("icon.png"))
-            except:
+            except Exception:
                 # Use a default icon - create a simple colored icon
                 try:
                     # Create a simple colored icon
                     pixmap = QPixmap(32, 32)
                     pixmap.fill(QColor(52, 152, 219))  # Blue color
                     self.tray_icon.setIcon(QIcon(pixmap))
-                except:
+                except Exception:
                     logger.warning("Could not create default icon for system tray")
             
             # Create tray menu

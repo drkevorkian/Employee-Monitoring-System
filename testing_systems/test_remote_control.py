@@ -22,7 +22,7 @@ def create_test_image(width=1920, height=1080):
     try:
         # Try to use a default font
         font = ImageFont.load_default()
-    except:
+    except Exception:
         font = None
     
     # Add timestamp
@@ -385,7 +385,7 @@ class RemoteControlTestClient:
         if self.socket:
             try:
                 self.socket.close()
-            except:
+            except Exception:
                 pass
         
         print("✅ Test client stopped")

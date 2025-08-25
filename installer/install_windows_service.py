@@ -24,7 +24,7 @@ def is_admin():
     """Check if the script is running with administrator privileges."""
     try:
         return ctypes.windll.shell32.IsUserAnAdmin()
-    except:
+    except Exception:
         return False
 
 def check_nssm():
@@ -249,7 +249,7 @@ def check_service_exists(service_name):
         result = subprocess.run(['sc', 'query', service_name], 
                               capture_output=True, text=True)
         return result.returncode == 0
-    except:
+    except Exception:
         return False
 
 def remove_service(service_name):
@@ -261,7 +261,7 @@ def remove_service(service_name):
         try:
             subprocess.run(['sc', 'stop', service_name], check=True)
             logger.info("Service stopped")
-        except:
+        except Exception:
             pass
         
         # Remove service
