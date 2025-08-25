@@ -60,7 +60,8 @@ def test_messaging():
         
         if len(data_bytes) == data_length:
             response = json.loads(data_bytes.decode('utf-8'))
-            if response.get('status') == 'accepted':
+            # Accept either legacy or typed response
+            if response.get('status') == 'accepted' or response.get('type') == 'registration_response':
                 print("✅ Registration accepted")
             else:
                 print(f"❌ Registration rejected: {response.get('message', 'Unknown error')}")
