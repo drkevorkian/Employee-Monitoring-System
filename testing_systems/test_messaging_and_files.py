@@ -138,6 +138,7 @@ def test_server_commands():
                     data_bytes += chunk
                 
                 if len(data_bytes) == data_length:
+                    # Server may send typed registration responses or commands; always decode as JSON
                     command = json.loads(data_bytes.decode('utf-8'))
                     print(f"📨 Received command: {command['type']}")
                     
@@ -193,7 +194,7 @@ def test_server_commands():
                         client_socket.sendall(length_bytes + data_bytes)
                         
                     else:
-                        print(f"❓ Unknown command type: {command['type']}")
+                        print(f"❓ Unknown command type: {command.get('type', 'unknown')}")
                         
         except socket.timeout:
             print("⏰ Timeout waiting for commands")
