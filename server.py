@@ -1026,7 +1026,8 @@ class MonitoringServer:
                 # Notify GUI to open/focus popup and append message to history for visual parity with web/client
                 try:
                     if self.gui_callback:
-                        self.gui_callback('chat_message', client_id, message, datetime.now().isoformat())
+                        # Explicitly notify GUI that the server sent a message so it can open/focus the popup
+                        self.gui_callback('server_sent_message', client_id, message, datetime.now().isoformat())
                 except Exception:
                     pass
             except Exception:
@@ -2409,6 +2410,8 @@ class MonitoringServerGUI(QMainWindow):
     file_list_response_signal = Signal(str, str, list, list)  # client_id, directory_path, files, directories
     file_content_response_signal = Signal(str, str, str, int, bool)  # client_id, file_path, content, file_size, is_binary
     file_operation_response_signal = Signal(str, str, str, str, str)  # client_id, operation, file_path, status, message
+    # Fired when the server itself sends a message so the GUI can reflect it immediately
+    server_sent_message_signal = Signal(str, str, str)  # client_id, message, timestamp
     
     def __init__(self, server: MonitoringServer):
         super().__init__()
@@ -2433,6 +2436,7 @@ class MonitoringServerGUI(QMainWindow):
         self.file_list_response_signal.connect(self._handle_file_list_response_safe)
         self.file_content_response_signal.connect(self._handle_file_content_response_safe)
         self.file_operation_response_signal.connect(self._handle_file_operation_response_safe)
+        self.server_sent_message_signal.connect(self._handle_server_sent_message_safe)
         
         # Verify environment/dependencies early; log warnings only.
         self._verify_environment()
@@ -3464,6 +3468,15 @@ class MonitoringServerGUI(QMainWindow):
                 # Emit signal for thread-safe GUI update
                 self.chat_message_signal.emit(client_id, message, timestamp)
                 logger.info(f"Chat message signal emitted for client {client_id}")
+            elif update_type == 'server_sent_message':
+                # Ensure a popup exists and append the message prefixed as Server
+                message, timestamp = args
+                try:
+                    self._show_messaging_popup(client_id)
+                except Exception:
+                    pass
+                # Emit signal so append happens on the GUI thread
+                self.server_sent_message_signal.emit(client_id, message, timestamp)
             elif update_type == 'chat_response':
                 message, timestamp = args
                 self.chat_response_signal.emit(client_id, message, timestamp)
@@ -3545,6 +3558,23 @@ class MonitoringServerGUI(QMainWindow):
             self.status_bar.showMessage(f"Response from {client_id}: {message}")
         except Exception as e:
             logger.error(f"Error in safe handle_chat_response: {e}")
+    
+    def _handle_server_sent_message_safe(self, client_id: str, message: str, timestamp: str):
+        """Thread-safe append for server-originated messages and ensure popup is visible."""
+        try:
+            # Ensure popup exists and is frontmost
+            try:
+                self._show_messaging_popup(client_id)
+            except Exception:
+                pass
+            if hasattr(self, 'messaging_popups') and client_id in self.messaging_popups:
+                popup = self.messaging_popups[client_id]
+                current = popup.history.toPlainText()
+                new_text = (current + ("\n\n" if current else "")) + f"[{timestamp}] Server: {message}"
+                popup.history.setPlainText(new_text)
+                popup.history.verticalScrollBar().setValue(popup.history.verticalScrollBar().maximum())
+        except Exception as e:
+            logger.error(f"Error in safe handle_server_sent_message: {e}")
     
     def _handle_file_list_response_safe(self, client_id: str, directory_path: str, files: list, directories: list):
         """Thread-safe method to handle file list responses (called by signal)."""
