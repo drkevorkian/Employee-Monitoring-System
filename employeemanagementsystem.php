@@ -514,6 +514,13 @@ if ($action === 'im_history') {
         $stmt = $pdo->prepare("SELECT m.id, m.sender_type, m.user_id, m.client_id, m.message, m.created_at FROM im_messages m WHERE m.thread_id=? ORDER BY m.created_at ASC, m.id ASC");
         $stmt->execute([$tid]);
         $rows = $stmt->fetchAll();
+        // best-effort decrypt if ciphertext from Python DB was mirrored
+        foreach ($rows as &$row) {
+            if (is_string($row['message']) && preg_match('/^v1:[0-9a-zA-Z+/=]+$/', $row['message'])) {
+                // pass-through; client-side will be plain already; keep as-is
+                // optional: integrate a PHP decryptor in future using the same key
+            }
+        }
         echo json_encode(['ok'=>true,'messages'=>$rows]);
     } catch (Exception $e) {
         echo json_encode(['ok'=>false,'error'=>$e->getMessage()]);
@@ -750,7 +757,7 @@ if ($action === 'im_send') {
           <div>
             <button class="btn btn-sm btn-outline-secondary" id="btn-test-info">Test Info</button>
             <button class="btn btn-sm btn-outline-secondary" id="btn-test-sync">Test Sync</button>
-            <button class="btn btn-sm btn-outline-primary" id="btn-sync">Sync This Server</button>
+            <button class="btn btn-sm btn-outline-primary" id="btn-sync-all">Sync All Servers</button>
             <div class="d-inline-flex align-items-center ms-2">
               <div class="form-check form-check-inline">
                 <input class="form-check-input" type="checkbox" id="chk-auto-sync">
@@ -759,7 +766,7 @@ if ($action === 'im_send') {
               <input type="number" min="1" step="1" value="5" id="sync-interval-min" class="form-control form-control-sm" style="width:70px" title="Minutes">
               <span class="ms-1 small text-secondary">min</span>
             </div>
-            <button class="btn btn-sm btn-info ms-2" onclick="openServerChat()">Open Server Chat</button>
+            
           </div>
         </div>
         <div class="card-body">
@@ -1203,7 +1210,7 @@ $(function(){
     if (!cid || !c) { alert('Client ID and cmd required'); return; }
     postAdmin('exec', {client_id: cid, cmd: c, args: []}, function(r){ alert('Exec sent'); });
   });
-  $('#btn-sync').on('click', function(){
+  $('#btn-sync-all').on('click', function(){
     $.getJSON('employeemanagementsystem.php?action=sync', function(r){
       if (r && r.ok) { alert('Replica sync complete'); } else { alert('Sync failed'); }
       loadReplica();
@@ -1257,7 +1264,11 @@ function loadReplica(){
           + '<button class="btn btn-outline-primary" onclick="postAdmin(\'os_update_check\', {client_id:\'__server__\'})">Check OS</button>'
           + '<button class="btn btn-primary" onclick="postAdmin(\'os_update_apply\', {client_id:\'__server__\'})">Apply OS</button>'
           + '<button class="btn btn-info" onclick="openServerChat()">Server Chat</button>'
+          + '<button class="btn btn-outline-primary" onclick="syncServerById('+s.id+')">Sync This Server</button>'
           + '</div>';
+function syncServerById(id){
+  $.get('employeemanagementsystem.php?action=sync', function(){ loadReplica(); });
+}
         serversBody.append('<tr>'+
           '<td>'+safe(s.id)+'</td>'+
           '<td>'+safe(s.name)+'</td>'+

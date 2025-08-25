@@ -1039,13 +1039,6 @@ class MonitoringServer:
                 self._send_data(client_conn.socket, chat_command)
                 awaiting = False
                 logger.info(f"Chat message sent to client {client_id}: {message}")
-                # Notify GUI to open/focus popup and append message to history for visual parity with web/client
-                try:
-                    if self.gui_callback:
-                        # Ask GUI to open/focus popup and append the server message
-                        self.gui_callback('open_message_popup', client_id, message, datetime.now().isoformat())
-                except Exception:
-                    pass
             except Exception:
                 # Queue for later delivery
                 awaiting = True
