@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Auto-Updater Guide</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; line-height: 1.5; margin: 2rem; color: #0f172a; }
+    code, pre { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 0.2rem 0.4rem; }
+    pre { padding: 1rem; overflow:auto; white-space: pre; }
+    h1 { font-size: 1.6rem; }
+    h2 { font-size: 1.25rem; margin-top: 1.5rem; }
+    ul { margin: 0.5rem 0 0.75rem 1.25rem; }
+    .muted { color: #475569; }
+  </style>
+</head>
+<body>
+  <h1>Auto-Updater Guide</h1>
+  <p class="muted">Signed bundles, safe unpack, atomic path switch, hot-reload hooks, busy-safe window, rollback.</p>
+
+  <h2>How it works at runtime</h2>
+  <ul>
+    <li><b>Signed bundle verification</b>: verifies <code>manifest.json</code> with Ed25519 signature (optional) and optional bundle SHA-256.</li>
+    <li><b>Safe unpack</b>: extracts <code>bundle.zip</code> into <code>Versions/&lt;version&gt;/</code> with path traversal protection.</li>
+    <li><b>Atomic switch</b>: prepends <code>Versions/&lt;version&gt;/</code> to <code>sys.path</code> so new code resolves first.</li>
+    <li><b>Hot-reload map</b>: reloads allowlisted modules; optional <code>__hot_apply__(context)</code> hook per module.</li>
+    <li><b>Busy-safe window</b>: waits up to 45s preferred idle; applies by 300s max if still busy.</li>
+    <li><b>Rollback</b>: on any failure during reload/hook, restores previous <code>sys.path</code> immediately.</li>
+  </ul>
+
+  <h2>Developer prerequisites</h2>
+  <ul>
+    <li>Ed25519 key pair to sign <code>manifest.json</code>.</li>
+    <li>A <code>bundle.zip</code> containing changed source files + signed <code>manifest.json</code>.</li>
+    <li>Metadata JSON (<code>update_meta.json</code> for server, <code>update_meta_client.json</code> for client).</li>
+    <li>List of module names to hot-reload and optional <code>__hot_apply__</code> hooks.</li>
+  </ul>
+
+  <h2>Generate keys and sign manifest</h2>
+  <pre>openssl genpkey -algorithm ed25519 -out ed25519_priv.pem
+openssl pkey -in ed25519_priv.pem -pubout -out ed25519_pub.pem</pre>
+  <p>Create a simple signing helper (Python):</p>
+  <pre>python tools/sign_manifest.py manifest.json &gt; sig.txt</pre>
+  <p>SHA-256 of bundle:</p>
+  <pre>python - &lt;&lt; 'PY'
+import hashlib,sys
+h=hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest();print(h)
+PY
+bundle.zip</pre>
+
+  <h2>manifest.json (inside the zip)</h2>
+  <pre>{
+  "version": "1.13.8",
+  "hot_reload": {
+    "modules": ["server"],
+    "allowlist": ["server", "server_ui.", "controllers."]
+  },
+  "signature": "&lt;base64-ed25519-signature-of-this-file&gt;"
+}</pre>
+  <ol>
+    <li>Write manifest without signature.</li>
+    <li>Sign it and capture the base64 signature.</li>
+    <li>Insert the signature string back into <code>manifest.json</code>.</li>
+    <li>Zip changed files + <code>manifest.json</code> as <code>bundle.zip</code>.</li>
+  </ol>
+
+  <h2>Update metadata (polled by apps)</h2>
+  <p><b>Server:</b> <code>update_meta.json</code></p>
+  <pre>{
+  "version": "1.13.8",
+  "bundle_path": "updates/bundle_1.13.8.zip",
+  "sha256": "&lt;sha256-hex&gt;",
+  "modules": ["server"],
+  "allowlist": ["server"],
+  "manifest_signature": "&lt;base64-signature&gt;",
+  "ed25519_pubkey_path": "ed25519_pub.pem",
+  "preferred_wait": 45,
+  "max_wait": 300
+}</pre>
+  <p><b>Client:</b> <code>update_meta_client.json</code> (same fields, client bundle path).</p>
+  <p>You may use <code>bundle_url</code> instead of <code>bundle_path</code> for remote delivery.</p>
+
+  <h2>Idle/busy gating (recommended)</h2>
+  <pre># Server after GUI creation
+server.updater.is_busy_func = gui.is_busy
+
+# Example GUI method (Python)
+# def is_busy(self):
+#     return self.full_screen_widget is not None
+</pre>
+
+  <h2>Hot-apply hooks</h2>
+  <pre>def __hot_apply__(context: dict):
+    # Rebind signals, refresh UI, reload models safely.
+    # Raise on failure to trigger rollback.
+    pass
+</pre>
+
+  <h2>Local test steps</h2>
+  <ol>
+    <li>Build and sign <code>manifest.json</code>, zip to <code>bundle.zip</code>.</li>
+    <li>Place bundle + <code>ed25519_pub.pem</code> in <code>updates/</code>.</li>
+    <li>Create <code>update_meta.json</code>/<code>update_meta_client.json</code> with fields above.</li>
+    <li>Start apps, watch logs for “Update applied to …”.</li>
+  </ol>
+
+  <h2>Best practices</h2>
+  <ul>
+    <li>Hot-reload only UI/controller layers; avoid sockets/threads/data layers.</li>
+    <li>Keep bundles minimal.</li>
+    <li>Keep private keys off target machines; rotate keys periodically.</li>
+  </ul>
+
+  <p class="muted">If you need CI scripts or example manifests/bundles added to the repo, let us know.</p>
+</body>
+</html>
+

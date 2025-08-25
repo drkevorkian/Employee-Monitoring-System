@@ -1,0 +1,43 @@
+Bug list (grouped, with IDs, status, severity)
+Messenger (popup/chat)
+MESS-001 — Popup initial position ignores taskbar and multi‑monitor work area; starts too low/right. Status: Open. Severity: High.
+MESS-002 — Minimize/close buttons overlap with the Send button; layout stacking is wrong. Status: Open. Severity: High.
+MESS-003 — Visuals too heavy (thick borders/contrast); inconsistent theme across widgets. Status: Open. Severity: Medium.
+MESS-004 — Fixed sizes; not responsive to DPI/scaling; content can clip. Status: Open. Severity: Medium.
+MESS-005 — Multi‑popup stacking can push windows off‑screen; not reflowed on close/minimize. Status: Open. Severity: Medium.
+MESS-006 — Conversation history not persisted to DB; lost across restarts. Status: Open. Severity: Medium.
+MESS-007 — GUI thread writes to socket directly; should marshal through worker thread to avoid freezes. Status: Open. Severity: High.
+MESS-008 — Z‑order/always‑on‑top behavior inconsistent between OSes. Status: Verify. Severity: Low.
+Connectivity/reliability
+NET-001 — Client sometimes drops with WinError 10054, often after minimize. Status: Open. Severity: Critical.
+NET-002 — After server restart, some clients fail to reconnect; stale server client-state. Status: Open. Severity: Critical.
+NET-003 — Heartbeats added; pruning of dead clients and UI refresh needs verification. Status: Verify. Severity: Medium.
+Server GUI (clients/database)
+GUI-001 — Switching Clients ↔ Database tab can result in empty client list. Status: Open. Severity: High.
+GUI-002 — Client count mismatch fix in place; needs sustained verification. Status: Verify. Severity: Medium.
+DB-001 — Database viewer occasionally shows no rows; mapping/refresh timing needs check. Status: Verify. Severity: Medium.
+File browser/remote FS
+FS-001 — Text color on light backgrounds was unreadable; fix needs verification across themes. Status: Verify. Severity: Medium.
+FS-002 — Back button enable/disable logic at root vs drives. Status: Verify. Severity: Low.
+FS-003 — Cross‑platform path handling and error surfacing for ops (move/copy/delete). Status: Verify. Severity: Medium.
+Services/installer
+INST-001 — Startup/service scripts referenced in docs are missing or outdated. Status: Open. Severity: High.
+INST-002 — Windows service wrapper not fully validated (install/uninstall/start/stop). Status: Open. Severity: High.
+INST-003 — Linux systemd installer/state not present/validated. Status: Open. Severity: High.
+Logging/observability
+LOG-001 — Rotation/numbered archive and auto‑cleanup policy not fully enforced for all components. Status: Open. Severity: Medium.
+LOG-002 — Integrated log reader UX in server not finalized/verified. Status: Open. Severity: Medium.
+Documentation/repo hygiene
+DOC-001 — README paths reference deleted/moved test/installer files. Status: Open. Severity: Medium.
+Features not complete/QA
+RC-001 — Remote reboot command end‑to‑end not implemented/validated. Status: Open. Severity: Medium.
+TRAY-001 — Tray/minimize lifecycle interacts with connectivity; needs tests. Status: Open. Severity: Medium.
+XPLAT-001 — Linux parity (tray, services, file ops) not validated. Status: Open. Severity: Medium.
+PERF-001 — Scale to 200 concurrent clients untested; perf baseline missing. Status: Open. Severity: High.
+CAP-001 — Real‑time multi‑client screen view flow not fully validated under load. Status: Open. Severity: High.
+Quick wins to tackle first
+Use QScreen.availableGeometry() for popup bounds; set margins (x=24, y=24) and center-right anchor. [Addresses MESS‑001]
+Move minimize/close into the header’s right side; ensure they don’t share row with Send button. [MESS‑002]
+Route chat send through the worker thread/queue. [MESS‑007]
+On tab change, always repopulate clients from in‑memory connections. [GUI‑001]
+Fixed/pending‑verify highlights: heartbeat timer, client count source, white‑on‑white text, PySide6 signal misuse.

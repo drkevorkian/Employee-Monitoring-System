@@ -1,0 +1,59 @@
+Employee Monitoring System - Features
+Last updated: 2025-08-24
+
+Implemented
+- Cross-platform Installer
+  - Linux: distro-aware pip/venv bootstrap (apt, dnf, zypper, pacman, apk, eopkg, xbps, emerge)
+  - Proactive virtualenv creation (PEP 668 safe); ensurepip / get-pip fallbacks
+  - Windows: PowerShell bootstrap + batch wrapper; installs Python 3.12.3 via winget/Chocolatey/direct
+- Database & Security
+  - SQLite with PRAGMA foreign_keys=ON; ON DELETE CASCADE for new tables; manual cascade for legacy DBs
+  - AES-GCM field encryption (SecurityManager)
+  - Hardened stats queries (no dynamic SQL injection)
+  - Tables: clients, sessions, screen_captures, chat_messages (status fields), file_operations, activity_logs, security_events, client_logs
+- Server (PySide6 GUI)
+  - Clients grid + tabs: Sessions, Captures, Messages, File Ops, Security
+  - Full-screen view is a separate window; remote input relay (mouse move/click/wheel, key events)
+  - Messaging UI with live status indicators (sent/delivered/read); offline queue delivery
+  - Admin HTTP listener on 127.0.0.1:9090 (EMS_ADMIN_TOKEN-protected) for reboot/shutdown/updates
+  - UpdaterService scaffold runs in background
+  - Stability fixes: no central widget churn; no unsafe signal introspection
+- Client
+  - Screen capture with size/quality control; headless-safe
+  - System info includes logged_in_user, uptime_seconds; MAC in network_info
+  - Remote input executor via pyautogui
+  - Messaging: delivered/read acknowledgements; soft-delete
+  - Remote logging: forwards client log records to server (stored + audited)
+- Web UI (PHP + jQuery + Bootstrap)
+  - Mirrors desktop data: Clients, Sessions, Captures, Messages, File Ops, Security
+  - Python bridges: tools/server_info.py (JSON), tools/get_latest_frame.py (image)
+  - MySQL replica DB (ems_web) with snapshot tables:
+    - servers, snapshot_clients, snapshot_sessions, snapshot_captures, snapshot_messages,
+      snapshot_fileops, snapshot_security, snapshot_client_logs
+  - Servers tab: “Sync This Server”, per-client actions (Reboot/Shutdown/OS Update Check/Apply)
+  - Auto-sync option and dark theme styling
+- Identity & Auditing
+  - Device label, logged_in_user, uptime_seconds, MAC captured and stored
+  - Activity logging and security events throughout
+
+In Progress / Planned
+- Auto-Updater (no-restart for minor versions)
+  - Signed bundle verify/unpack; atomic path switch
+  - Hot-reload allowlist + __hot_apply__ hooks
+  - Busy-safe apply window (pref 45s, max 300s)
+  - Automatic rollback on failure
+- OS update orchestration from Web UI
+- Auto-sync servers every N minutes (configurable)
+- Command templates, safe bulk actions, scheduling, playbooks (with approvals/audit)
+- Alerting rules (offline > X, high CPU, low disk, version drift)
+- Backup/restore UI for MySQL snapshots and key material
+- RBAC, SSO/Directory integration, strong auth, audit center
+- Forensics (on-demand evidence bundle, screen time-lapse/diff, file integrity monitor)
+- Inventory context (auto-tagging, license/entitlement tracker, geo/IP mapping)
+- Reliability & safety (multi-server federation, quotas/throttles)
+- Notifications & workflow (alerting, inbox for approvals)
+- Web UI productivity (context actions, keyboard shortcuts, saved reports)
+- Client identity: stable client_id derived from hardware (e.g., base64(MAC) with salt)
+
+Notes
+- Update this file as features are added, stabilized, or moved between sections.
