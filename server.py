@@ -19,6 +19,8 @@ import queue
 import uuid
 
 # Import required libraries with error handling
+GUI_AVAILABLE = True
+GUI_IMPORT_ERROR = None
 try:
     from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                  QHBoxLayout, QGridLayout, QLabel, QPushButton, 
@@ -29,10 +31,20 @@ try:
     from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize, QRect, QEvent
     from PySide6.QtGui import (QPixmap, QImage, QFont, QIcon, QPalette, QColor,
                               QPainter, QPen, QBrush)
-except ImportError as e:
-    print(f"Required library not found: {e}")
-    print("Please install required packages: pip install -r requirements.txt")
-    sys.exit(1)
+except Exception as e:  # Catch broader errors like missing libEGL
+    # Defer GUI usage to runtime; allow headless/server-only imports
+    GUI_AVAILABLE = False
+    GUI_IMPORT_ERROR = e
+    class _QtDummy:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __call__(self, *args, **kwargs):
+            return self
+        def __getattr__(self, name):
+            return self
+    QApplication = QMainWindow = QWidget = QVBoxLayout = QHBoxLayout = QGridLayout = QLabel = QPushButton = QTextEdit = QTabWidget = QSplitter = QScrollArea = QFrame = QGroupBox = QTableWidget = QTableWidgetItem = QHeaderView = QProgressBar = QStatusBar = QMenuBar = QMessageBox = QInputDialog = QFileDialog = QSlider = _QtDummy
+    Qt = QTimer = QThread = Signal = QSize = QRect = QEvent = _QtDummy
+    QPixmap = QImage = QFont = QIcon = QPalette = QColor = QPainter = QPen = QBrush = _QtDummy
 
 # Import our custom modules
 try:
@@ -4801,24 +4813,31 @@ class MonitoringServerGUI(QMainWindow):
             event.accept()
 
 def main():
-    """Main entry point for the monitoring server."""
+    """Main entry point for the monitoring server.
+
+    If the GUI stack is unavailable (e.g., missing libEGL in headless CI), start server in headless mode.
+    """
     try:
-        # Create Qt application
-        app = QApplication(sys.argv)
-        
-        # Set application style
-        app.setStyle('Fusion')
-        
-        # Create server instance
-        server = MonitoringServer()
-        
-        # Create and show GUI
-        gui = MonitoringServerGUI(server)
-        gui.show()
-        
-        # Start event loop
-        sys.exit(app.exec())
-        
+        if GUI_AVAILABLE:
+            app = QApplication(sys.argv)
+            app.setStyle('Fusion')
+            server = MonitoringServer()
+            gui = MonitoringServerGUI(server)
+            gui.show()
+            sys.exit(app.exec())
+        else:
+            logger.warning(f"GUI unavailable ({GUI_IMPORT_ERROR}). Starting in headless mode.")
+            server = MonitoringServer()
+            server.start()
+            # Keep process alive; minimal loop
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                pass
+            finally:
+                server.stop()
+                sys.exit(0)
     except Exception as e:
         logger.error(f"Application failed: {e}")
         sys.exit(1)
