@@ -162,17 +162,17 @@ class MonitoringClient:
             # Check if running in a service context
             if self.platform == 'windows':
                 # Windows service check
-                import win32serviceutil
-                import win32service
-                return True
+                try:
+                    import win32serviceutil
+                    import win32service
+                    return True
+                except ImportError:
+                    return False
             elif self.platform in ['linux', 'darwin']:
                 # Linux/macOS service check
                 return os.environ.get('SERVICE_NAME') is not None or 'systemd' in os.environ.get('PATH', '')
             else:
                 return False
-        except ImportError:
-            # win32service not available, not running as Windows service
-            return False
         except Exception:
             return False
     
@@ -359,15 +359,15 @@ class MonitoringClient:
         try:
             if self.platform == 'windows':
                 # Check Windows registry for startup entry
-                import winreg
                 try:
+                    import winreg
                     key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
                                        r"Software\Microsoft\Windows\CurrentVersion\Run", 
                                        0, winreg.KEY_READ)
                     winreg.QueryValueEx(key, self.service_display_name)
                     winreg.CloseKey(key)
                     return True
-                except FileNotFoundError:
+                except (ImportError, FileNotFoundError):
                     return False
             elif self.platform in ['linux', 'darwin']:
                 # Check systemd service or launchd
@@ -1111,7 +1111,7 @@ class MonitoringClient:
         try:
             # Check for null bytes or non-printable characters
             return b'\x00' in content or not content.decode('utf-8', errors='ignore').isprintable()
-        except:
+        except Exception:
             return True
     
     def _handle_file_delete(self, file_path: str, command: Dict[str, Any]) -> bool:
@@ -1506,7 +1506,7 @@ WantedBy=multi-user.target
             try:
                 subprocess.run(['sc', 'stop', self.service_name], check=True)
                 time.sleep(2)
-            except:
+            except Exception:
                 pass
             
             # Delete service
@@ -1530,7 +1530,7 @@ WantedBy=multi-user.target
             try:
                 subprocess.run(['systemctl', 'stop', self.service_name], check=True)
                 subprocess.run(['systemctl', 'disable', self.service_name], check=True)
-            except:
+            except Exception:
                 pass
             
             # Remove service file
@@ -1557,7 +1557,7 @@ WantedBy=multi-user.target
             
             try:
                 subprocess.run(['launchctl', 'unload', plist_path], check=True)
-            except:
+            except Exception:
                 pass
             
             # Remove plist file

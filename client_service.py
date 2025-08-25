@@ -107,7 +107,7 @@ class MonitoringClientService(win32serviceutil.ServiceFramework):
         finally:
             try:
                 client.stop()
-            except:
+            except Exception:
                 pass
 
 def main():

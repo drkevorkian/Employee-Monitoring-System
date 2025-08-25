@@ -107,7 +107,7 @@ class SecureDatabase:
                 logger.info("Database connection invalid, reconnecting...")
                 try:
                     self.conn.close()
-                except:
+                except Exception:
                     pass
                 self._init_database()
                 return True
@@ -741,7 +741,7 @@ class SecureDatabase:
                 if client_data.get('capabilities'):
                     try:
                         client_data['capabilities'] = json.loads(client_data['capabilities'])
-                    except:
+                    except Exception:
                         client_data['capabilities'] = {}
                 clients.append(client_data)
             
@@ -788,7 +788,7 @@ class SecureDatabase:
                 if capture_data.get('metadata'):
                     try:
                         capture_data['metadata'] = json.loads(capture_data['metadata'])
-                    except:
+                    except Exception:
                         capture_data['metadata'] = {}
                 captures.append(capture_data)
             

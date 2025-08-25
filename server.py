@@ -2458,7 +2458,7 @@ class MonitoringServerGUI(QMainWindow):
         # Set application icon (if available)
         try:
             self.setWindowIcon(QIcon("icon.png"))
-        except:
+        except Exception:
             pass
         
         # Create central widget
