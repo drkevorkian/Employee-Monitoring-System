@@ -270,6 +270,9 @@ class MonitoringServer:
             self.is_running = True
             self.start_time = time.time()
             
+            # Clean up any stale client states from previous server runs
+            self._cleanup_stale_clients()
+            
             # Start accept thread
             self.accept_thread = threading.Thread(target=self._accept_connections, daemon=True)
             self.accept_thread.start()
@@ -2503,6 +2506,9 @@ class MonitoringServerGUI(QMainWindow):
         
         main_layout.addWidget(self.tab_widget)
         
+        # Connect tab change handler to refresh client list when switching between tabs
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+        
         # Create status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -4679,6 +4685,15 @@ class MonitoringServerGUI(QMainWindow):
         self._update_stats()
         self._update_client_table()
         self.status_bar.showMessage("View refreshed")
+    
+    def _on_tab_changed(self, index):
+        """Handle tab change events to refresh client list from in-memory connections."""
+        try:
+            # Always repopulate clients from in-memory connections when tab changes
+            self._update_client_table()
+            logger.debug(f"Tab changed to index {index}, client table refreshed")
+        except Exception as e:
+            logger.error(f"Error handling tab change: {e}")
     
     def _export_data(self):
         """Export monitoring data."""
