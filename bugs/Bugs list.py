@@ -112,18 +112,24 @@ class BugRepository(QObject):
                 current_category = line
                 continue
 
+            # If currently in quick wins block, detect end when a new header or section starts
             if in_quick_wins:
-                # Treat non-empty lines as quick wins until next section or EOF
-                if not (line.endswith(":") or re.match(r"^[A-Za-z].*\)$", line)):
+                # If we reach a new section/header, exit quick wins mode
+                if line.endswith(":") or re.match(r"^[A-Za-z].*\)$", line):
+                    in_quick_wins = False  # leave quick wins section
+                    # fall through to normal processing of this header line
+                else:
+                    # Collect quick win entry
                     self.quick_wins.append(line)
-                continue
+                    continue
 
             m = id_desc_status_sev.match(line)
             if m:
                 bug = Bug(
                     bug_id=m.group("id"),
                     description=m.group("desc").strip(),
-                    status=m.group("status").strip().capitalize(),
+                    # The 'status' group may be optional; ensure we handle None gracefully
+                    status=(m.group("status") or "Unknown").strip().capitalize(),
                     severity=m.group("severity").strip().capitalize(),
                     category=current_category,
                 )
