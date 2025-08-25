@@ -34,7 +34,7 @@ try:
                                  QHBoxLayout, QLabel, QPushButton, QTextEdit, 
                                  QSystemTrayIcon, QMenu, QMessageBox,
                                  QProgressBar, QFrame, QSlider, QCheckBox)
-    from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize, QRect
+    from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize, QRect, QEvent
     from PySide6.QtGui import QPixmap, QImage, QFont, QIcon, QPalette, QColor, QAction
 except ImportError as e:
     print(f"Required library not found: {e}")
@@ -2603,6 +2603,29 @@ class ClientMainWindow(QMainWindow):
             # Fallback to normal exit
             self._exit_application()
             event.accept()
+    
+    def changeEvent(self, event):
+        """Handle window state change events to prevent connection drops on minimize."""
+        try:
+            if event.type() == QEvent.Type.WindowStateChange:
+                if self.isMinimized():
+                    logger.debug("Window minimized - ensuring connection stays alive")
+                    # Force a heartbeat to keep connection active during minimize
+                    if hasattr(self, 'monitoring_thread') and self.monitoring_thread and self.monitoring_thread.is_running:
+                        try:
+                            # Send immediate heartbeat to prevent connection timeout
+                            self.monitoring_thread.last_heartbeat = time.time() - self.monitoring_thread.heartbeat_interval + 1
+                            logger.debug("Forced heartbeat update for minimize event")
+                        except Exception as e:
+                            logger.warning(f"Could not force heartbeat on minimize: {e}")
+                elif self.windowState() == Qt.WindowState.WindowNoState:
+                    logger.debug("Window restored from minimize")
+            
+            super().changeEvent(event)
+            
+        except Exception as e:
+            logger.error(f"Error in changeEvent: {e}")
+            super().changeEvent(event)
     
     def _verify_button_text(self):
         """Debug method to verify button text is properly set."""
