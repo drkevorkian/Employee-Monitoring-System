@@ -41,6 +41,8 @@ class SecureDatabase:
         self.log_retention_days = config.getint('Database', 'log_retention_days', fallback=90)
         
         # Initialize database connection
+        import threading
+        self._conn_lock = threading.Lock()
         self._init_database()
         
         # Create tables with proper schema
@@ -94,10 +96,11 @@ class SecureDatabase:
     def _ensure_connection(self):
         """Ensure database connection is active, reconnect if necessary."""
         try:
-            if not hasattr(self, 'conn') or self.conn is None:
-                logger.info("Database connection lost, reconnecting...")
-                self._init_database()
-                return True
+            with self._conn_lock:
+                if not hasattr(self, 'conn') or self.conn is None:
+                    logger.info("Database connection lost, reconnecting...")
+                    self._init_database()
+                    return True
             
             # Test if connection is still valid
             try:
@@ -107,13 +110,13 @@ class SecureDatabase:
                 logger.info("Database connection invalid, reconnecting...")
                 try:
                     self.conn.close()
-                except:
-                    pass
+                except Exception as e_close:
+                    logger.debug(f"Error closing DB during reconnect: {e_close}", exc_info=True)
                 self._init_database()
                 return True
                 
         except Exception as e:
-            logger.error(f"Failed to ensure database connection: {e}")
+            logger.error(f"Failed to ensure database connection: {e}", exc_info=True)
             return False
     
     def _create_tables(self):
@@ -1651,10 +1654,14 @@ class SecureDatabase:
         """Close database connection and cleanup resources."""
         try:
             if hasattr(self, 'conn'):
+                try:
+                    self._conn_lock.acquire()
+                except Exception:
+                    pass
                 self.conn.close()
             logger.info("Database connection closed")
         except Exception as e:
-            logger.error(f"Failed to close database: {e}")
+            logger.error(f"Failed to close database: {e}", exc_info=True)
     
     def __enter__(self):
         """Context manager entry."""

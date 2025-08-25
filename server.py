@@ -1023,6 +1023,12 @@ class MonitoringServer:
                 self._send_data(client_conn.socket, chat_command)
                 awaiting = False
                 logger.info(f"Chat message sent to client {client_id}: {message}")
+                # Notify GUI to open/focus popup and append message to history for visual parity with web/client
+                try:
+                    if self.gui_callback:
+                        self.gui_callback('chat_message', client_id, message, datetime.now().isoformat())
+                except Exception:
+                    pass
             except Exception:
                 # Queue for later delivery
                 awaiting = True
@@ -1268,9 +1274,22 @@ class MonitoringServer:
             # Wait for threads to finish
             if self.accept_thread:
                 self.accept_thread.join(timeout=5)
+            if hasattr(self, 'data_processing_thread') and self.data_processing_thread:
+                try:
+                    self.data_processing_thread.join(timeout=3)
+                except Exception as _:
+                    pass
             
+            # Join and prune finished client threads
+            alive_threads = []
             for thread in self.client_threads:
-                thread.join(timeout=1)
+                try:
+                    thread.join(timeout=1)
+                except Exception:
+                    pass
+                if thread.is_alive():
+                    alive_threads.append(thread)
+            self.client_threads = alive_threads
             
             # Cleanup resources
             self.security_manager.cleanup()

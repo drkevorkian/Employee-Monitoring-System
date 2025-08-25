@@ -171,6 +171,39 @@ function webdb_conn() {
   return $pdo;
 }
 
+function resolve_admin_creds($root){
+  $token = getenv('EMS_ADMIN_TOKEN') ?: '';
+  $port  = getenv('EMS_ADMIN_PORT') ?: '';
+  if ($token === '' || $port === '') {
+    $cfgFile = $root . DIRECTORY_SEPARATOR . 'config.ini';
+    if (file_exists($cfgFile)) {
+      $ini = @parse_ini_file($cfgFile, true, INI_SCANNER_TYPED);
+      if (is_array($ini) && isset($ini['WebAdmin'])) {
+        if ($token === '' && !empty($ini['WebAdmin']['admin_token'])) { $token = (string)$ini['WebAdmin']['admin_token']; }
+        if ($port === '' && !empty($ini['WebAdmin']['admin_port'])) { $port = (string)$ini['WebAdmin']['admin_port']; }
+      }
+    }
+  }
+  if ($port === '') { $port = '9090'; }
+  return [$token, $port];
+}
+
+function admin_forward($root, array $payload){
+  list($token, $port) = resolve_admin_creds($root);
+  $json = json_encode($payload);
+  $headers = "Content-Type: application/json\r\n" . ($token?"X-Admin-Token: $token\r\n":'');
+  $opts = [ 'http' => [ 'method' => 'POST', 'header' => $headers, 'content' => $json, 'timeout' => 3 ] ];
+  $ctx = stream_context_create($opts);
+  $resp = @file_get_contents("http://127.0.0.1:".$port, false, $ctx);
+  if ($resp === false && function_exists('curl_init')) {
+    $ch = curl_init('http://127.0.0.1:'.$port);
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER=>true, CURLOPT_POST=>true, CURLOPT_HTTPHEADER=>array_filter(explode("\r\n", trim($headers))), CURLOPT_POSTFIELDS=>$json, CURLOPT_TIMEOUT=>3]);
+    $resp = curl_exec($ch);
+    curl_close($ch);
+  }
+  return $resp;
+}
+
 function enc_secret($plain) {
   $key = getenv('WEB_MASTER_KEY');
   if (!$key || strlen($key) < 16) return $plain; // store plaintext if no key
@@ -318,17 +351,8 @@ if ($action === 'admin') {
     if (!isset($_SESSION['uid'])) { echo json_encode(['ok'=>false]); exit; }
     $raw = file_get_contents('php://input');
     if ($raw === false) { $raw = '{}'; }
-    $token = getenv('EMS_ADMIN_TOKEN') ?: '';
-    $port  = getenv('EMS_ADMIN_PORT') ?: '9090';
-    $opts = [
-      'http' => [
-        'method' => 'POST',
-        'header' => "Content-Type: application/json\r\n" . ($token?"X-Admin-Token: $token\r\n":''),
-        'content' => $raw
-      ]
-    ];
-    $ctx = stream_context_create($opts);
-    $resp = @file_get_contents("http://127.0.0.1:".$port, false, $ctx);
+    $payload = json_decode($raw ?: '{}', true);
+    $resp = admin_forward($root, is_array($payload)?$payload:[]);
     echo $resp ?: json_encode(['ok'=>false]);
     exit;
 }
@@ -518,12 +542,13 @@ if ($action === 'im_send') {
         $ins2 = $pdo->prepare("INSERT INTO im_messages (thread_id, sender_type, user_id, client_id, message) VALUES (?, 'user', ?, ?, ?)");
         $ins2->execute([(int)$tid, (int)$_SESSION['uid'], $clientId, $message]);
         // Forward to local admin API for delivery to server->client
-        $token = getenv('EMS_ADMIN_TOKEN') ?: '';
-        $port  = getenv('EMS_ADMIN_PORT') ?: '9090';
-        $opts = [ 'http' => [ 'method' => 'POST', 'header' => "Content-Type: application/json\r\n" . ($token?"X-Admin-Token: $token\r\n":''), 'content' => json_encode(['command'=>'send_chat','client_id'=>$clientId,'message'=>$message]) ] ];
-        $ctx = stream_context_create($opts);
-        @file_get_contents("http://127.0.0.1:".$port, false, $ctx);
-        echo json_encode(['ok'=>true]);
+        $resp = admin_forward($root, ['command'=>'send_chat','client_id'=>$clientId,'message'=>$message]);
+        $okForward = false;
+        if ($resp !== false) {
+            $j = json_decode($resp, true);
+            if (is_array($j) && array_key_exists('ok', $j)) { $okForward = (bool)$j['ok']; } else { $okForward = true; }
+        }
+        echo json_encode(['ok'=> $okForward]);
     } catch (Exception $e) {
         echo json_encode(['ok'=>false,'error'=>$e->getMessage()]);
     }
@@ -837,20 +862,64 @@ if ($action === 'im_send') {
 function safe(v){ return (v===null||v===undefined)?'':v; }
 // Chat modal
 const imModalHtml = `
-<div class="modal fade" id="imModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-scrollable">
-    <div class="modal-content" style="background:#1f2937;color:#e5e7eb;">
-      <div class="modal-header"><h5 class="modal-title">Chat with <span id="imClient"></span></h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
-      <div class="modal-body" id="imBody" style="max-height:400px; overflow:auto; background:#111827"></div>
-      <div class="modal-footer">
-        <input class="form-control" id="imInput" placeholder="Type a message"/>
-        <button class="btn btn-primary" id="imSendBtn">Send</button>
+<style>
+  /* Floating IM panel (client-like) */
+  #imPanel { position: fixed; right: 24px; bottom: 24px; width: 360px; max-width: 90vw; z-index: 1060; }
+  #imCard { background:#FFFFFF; border:2px solid #00BFFF; border-radius:15px; box-shadow:0 10px 24px rgba(0,0,0,0.3); overflow:hidden; }
+  #imHeader { background:#00BFFF; color:#fff; font-weight:700; font-size:14px; padding:8px 10px; display:flex; align-items:center; justify-content:space-between; }
+  #imBody { background: linear-gradient(180deg, #FFFFFF 0%, #F8F9FA 100%); padding:10px; height:320px; overflow:auto; color:#2C3E50; }
+  #imInputBar { display:flex; gap:8px; padding:10px; background:#fff; border-top:1px solid #DEE2E6; }
+  #imInput { flex:1; border:1px solid #DEE2E6; border-radius:6px; padding:8px; font-size:12px; }
+  #imSendBtn { background:linear-gradient(180deg,#00BFFF,#0099CC); border:none; color:#fff; border-radius:6px; padding:6px 12px; font-weight:700; }
+  #imStatus { text-align:right; font-size:11px; color:rgba(255,0,0,0.7); padding:0 10px 6px; }
+  #imMinBtn, #imCloseBtn { border:none; border-radius:4px; color:#fff; font-weight:700; width:22px; height:22px; }
+  #imMinBtn { background:#f39c12; }
+  #imMinBtn:hover { background:#e67e22; }
+  #imCloseBtn { background:#e74c3c; }
+  #imCloseBtn:hover { background:#c0392b; }
+  #imMini { position: fixed; right:24px; bottom:24px; background:#00BFFF; color:#fff; border-radius:14px; padding:6px 10px; cursor:pointer; font-weight:700; z-index:1059; display:none; box-shadow:0 6px 16px rgba(0,0,0,0.25); }
+  .im-msg { margin-bottom:8px; }
+  .im-me { color:#2C3E50; }
+  .im-them { color:#2C3E50; }
+</style>
+<div id="imPanel" style="display:none;">
+  <div id="imCard">
+    <div id="imHeader">
+      <div>💬 Chat with <span id="imClient"></span></div>
+      <div>
+        <button id="imMinBtn">_</button>
+        <button id="imCloseBtn">×</button>
       </div>
     </div>
+    <div id="imBody"></div>
+    <div id="imStatus"></div>
+    <div id="imInputBar">
+      <input id="imInput" placeholder="Type a message" />
+      <button id="imSendBtn">Send</button>
+    </div>
   </div>
-</div>`;
+  </div>
+<div id="imMini">💬 Chat</div>`;
 document.addEventListener('DOMContentLoaded', function(){
   const container = document.createElement('div'); container.innerHTML = imModalHtml; document.body.appendChild(container);
+  // wire header buttons
+  document.body.addEventListener('click', function(e){
+    if (e.target && e.target.id === 'imMinBtn') {
+      const panel = document.getElementById('imPanel'); const mini = document.getElementById('imMini');
+      if (panel && mini) { panel.style.display = 'none'; mini.style.display = 'block'; }
+    }
+    if (e.target && e.target.id === 'imCloseBtn') {
+      const panel = document.getElementById('imPanel'); const mini = document.getElementById('imMini');
+      if (panel) { panel.style.display = 'none'; }
+      if (mini) { mini.style.display = 'none'; }
+      // stop timer
+      if (window.imTimer) { clearInterval(window.imTimer); window.imTimer = null; }
+    }
+    if (e.target && e.target.id === 'imMini') {
+      const panel = document.getElementById('imPanel'); const mini = document.getElementById('imMini');
+      if (panel && mini) { panel.style.display = 'block'; mini.style.display = 'none'; }
+    }
+  });
 });
 function fetchInfo() {
   $.getJSON('employeemanagementsystem.php?action=info', function(data){
@@ -1092,8 +1161,8 @@ function openChat(clientId){
   imClient = clientId;
   const title = document.getElementById('imClient'); if (title) title.textContent = clientId;
   const body = $('#imBody'); body && body.empty();
-  imModalRef = new bootstrap.Modal(document.getElementById('imModal'));
-  imModalRef.show();
+  const panel = document.getElementById('imPanel'); const mini = document.getElementById('imMini');
+  if (panel) panel.style.display = 'block'; if (mini) mini.style.display = 'none';
   loadImHistory();
   if (imTimer) clearInterval(imTimer);
   imTimer = setInterval(loadImHistory, 2000);
@@ -1106,7 +1175,7 @@ function loadImHistory(){
     body.empty();
     r.messages.forEach(m => {
       const who = (m.sender_type==='user') ? 'You' : 'Client';
-      const item = $('<div class="mb-2"></div>').text('['+safe(m.created_at)+'] '+who+': '+safe(m.message));
+      const item = $('<div class="im-msg"></div>').text('['+safe(m.created_at)+'] '+who+': '+safe(m.message));
       body.append(item);
     });
     body.scrollTop(body.prop('scrollHeight'));

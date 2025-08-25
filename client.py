@@ -474,6 +474,13 @@ class MonitoringClient:
                 x = int(command.get('x', 0))
                 y = int(command.get('y', 0))
                 duration = float(command.get('duration', 0))
+                # Clamp within screen bounds
+                try:
+                    scr_w, scr_h = pyautogui.size()
+                    x = max(0, min(x, scr_w - 1))
+                    y = max(0, min(y, scr_h - 1))
+                except Exception:
+                    pass
                 pyautogui.moveTo(x, y, duration=max(0.0, duration))
                 return True
             if action == 'mouse_click':
@@ -483,7 +490,14 @@ class MonitoringClient:
                 clicks = int(command.get('clicks', 1))
                 interval = float(command.get('interval', 0.0))
                 if x is not None and y is not None:
-                    pyautogui.click(int(x), int(y), clicks=clicks, interval=interval, button=button)
+                    xi, yi = int(x), int(y)
+                    try:
+                        scr_w, scr_h = pyautogui.size()
+                        xi = max(0, min(xi, scr_w - 1))
+                        yi = max(0, min(yi, scr_h - 1))
+                    except Exception:
+                        pass
+                    pyautogui.click(xi, yi, clicks=clicks, interval=interval, button=button)
                 else:
                     pyautogui.click(clicks=clicks, interval=interval, button=button)
                 return True
