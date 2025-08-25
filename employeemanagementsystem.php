@@ -372,7 +372,8 @@ if ($action === 'replica_overview') {
             'security_count' => (int)$pdo->query("SELECT COUNT(*) FROM snapshot_security WHERE server_id=1")->fetchColumn(),
         ];
         $clients = $pdo->query("SELECT client_id, hostname, platform, status, last_seen, ip_address, logged_in_user, mac_address, uptime_seconds FROM snapshot_clients WHERE server_id=1 ORDER BY last_seen DESC LIMIT 200")->fetchAll();
-        echo json_encode(['ok'=>true, 'last_sync_at'=>$last] + $counts + ['clients'=>$clients]);
+        $servers = $pdo->query("SELECT id, name, base_url, last_sync_at FROM servers ORDER BY id ASC")->fetchAll();
+        echo json_encode(['ok'=>true, 'last_sync_at'=>$last] + $counts + ['clients'=>$clients, 'servers'=>$servers]);
     } catch (Exception $e) {
         echo json_encode(['ok'=>false,'error'=>$e->getMessage()]);
     }
@@ -520,6 +521,99 @@ if ($action === 'im_history') {
     exit;
 }
 
+// Live IM history directly from the Python server's SQLite (source of truth)
+if ($action === 'im_live_history') {
+    header('Content-Type: application/json; charset=utf-8');
+    if (!isset($_SESSION['uid'])) { echo json_encode(['ok'=>false,'error'=>'auth required']); exit; }
+    try {
+        $clientId = isset($_GET['client_id']) ? (string)$_GET['client_id'] : '';
+        if ($clientId === '') { echo json_encode(['ok'=>false,'error'=>'client_id required']); exit; }
+        // Use tools/server_info.py to fetch live chat_messages, then filter for this client
+        $helper = $root . DIRECTORY_SEPARATOR . 'tools' . DIRECTORY_SEPARATOR . 'server_info.py';
+        if (!file_exists($helper)) { echo json_encode(['ok'=>false,'error'=>'helper missing']); exit; }
+        $cmd = (stripos($python, ' ') !== false ? $python : escapeshellcmd($python)) . ' ' . escapeshellarg($helper);
+        $out = @shell_exec($cmd);
+        $data = json_decode($out ?: '{}', true);
+        if (!is_array($data) || empty($data['ok'])) { echo json_encode(['ok'=>false,'error'=>'live fetch failed']); exit; }
+        $messages = [];
+        foreach (($data['chat_messages'] ?? []) as $m) {
+            if (($m['client_id'] ?? '') !== $clientId) { continue; }
+            $dir = strtolower((string)($m['direction'] ?? ''));
+            $sender = ($dir === 'server_to_client') ? 'server' : 'client';
+            $messages[] = [
+                'sender_type' => $sender,
+                'message' => (string)($m['message'] ?? ''),
+                'created_at' => (string)($m['timestamp'] ?? '')
+            ];
+        }
+        echo json_encode(['ok'=>true,'messages'=>$messages]);
+    } catch (Exception $e) {
+        echo json_encode(['ok'=>false,'error'=>$e->getMessage()]);
+    }
+    exit;
+}
+
+// Live server-only chat history (separate thread id: __server__)
+if ($action === 'im_live_history_server') {
+    header('Content-Type: application/json; charset=utf-8');
+    if (!isset($_SESSION['uid'])) { echo json_encode(['ok'=>false,'error'=>'auth required']); exit; }
+    try {
+        $helper = $root . DIRECTORY_SEPARATOR . 'tools' . DIRECTORY_SEPARATOR . 'server_info.py';
+        if (!file_exists($helper)) { echo json_encode(['ok'=>false,'error'=>'helper missing']); exit; }
+        $cmd = (stripos($python, ' ') !== false ? $python : escapeshellcmd($python)) . ' ' . escapeshellarg($helper);
+        $out = @shell_exec($cmd);
+        $data = json_decode($out ?: '{}', true);
+        if (!is_array($data) || empty($data['ok'])) { echo json_encode(['ok'=>false,'error'=>'live fetch failed']); exit; }
+        $messages = [];
+        foreach (($data['chat_messages'] ?? []) as $m) {
+            if (($m['client_id'] ?? '') !== '__server__') { continue; }
+            $sender = 'server';
+            $messages[] = [
+                'sender_type' => $sender,
+                'message' => (string)($m['message'] ?? ''),
+                'created_at' => (string)($m['timestamp'] ?? '')
+            ];
+        }
+        echo json_encode(['ok'=>true,'messages'=>$messages]);
+    } catch (Exception $e) {
+        echo json_encode(['ok'=>false,'error'=>$e->getMessage()]);
+    }
+    exit;
+}
+
+// Send message to server-only thread
+if ($action === 'im_send_server') {
+    header('Content-Type: application/json; charset=utf-8');
+    if (!isset($_SESSION['uid'])) { echo json_encode(['ok'=>false,'error'=>'auth required']); exit; }
+    $raw = file_get_contents('php://input');
+    $data = json_decode($raw ?: '{}', true);
+    $message = isset($data['message']) ? (string)$data['message'] : '';
+    if ($message === '') { echo json_encode(['ok'=>false,'error'=>'message required']); exit; }
+    try {
+        // Mirror to web DB thread for server
+        $pdo = webdb_conn();
+        $serverId = 1; $clientId = '__server__';
+        $sel = $pdo->prepare("SELECT id FROM im_threads WHERE server_id=? AND client_id=? LIMIT 1");
+        $sel->execute([$serverId, $clientId]);
+        $tid = $sel->fetchColumn();
+        if (!$tid) {
+            $ins = $pdo->prepare("INSERT INTO im_threads (server_id, client_id, name) VALUES (?, ?, ?)");
+            $ins->execute([$serverId, $clientId, 'Server']);
+            $tid = (int)$pdo->lastInsertId();
+        }
+        $ins2 = $pdo->prepare("INSERT INTO im_messages (thread_id, sender_type, user_id, client_id, message) VALUES (?, 'user', ?, ?, ?)");
+        $ins2->execute([(int)$tid, (int)$_SESSION['uid'], $clientId, $message]);
+        // Forward to admin API as server_chat so Python server stores it too
+        $resp = admin_forward($root, ['command'=>'server_chat','message'=>$message]);
+        $okForward = false;
+        if ($resp !== false) { $j = json_decode($resp, true); $okForward = is_array($j) ? (bool)($j['ok'] ?? true) : true; }
+        echo json_encode(['ok'=>$okForward]);
+    } catch (Exception $e) {
+        echo json_encode(['ok'=>false,'error'=>$e->getMessage()]);
+    }
+    exit;
+}
+
 if ($action === 'im_send') {
     if (!isset($_SESSION['uid'])) { header('Content-Type: application/json'); echo json_encode(['ok'=>false,'error'=>'auth required']); exit; }
     header('Content-Type: application/json; charset=utf-8');
@@ -547,6 +641,13 @@ if ($action === 'im_send') {
         if ($resp !== false) {
             $j = json_decode($resp, true);
             if (is_array($j) && array_key_exists('ok', $j)) { $okForward = (bool)$j['ok']; } else { $okForward = true; }
+        }
+        // Mirror the server outbound message so the web chat shows both sides
+        if ($okForward) {
+            try {
+                $ins3 = $pdo->prepare("INSERT INTO im_messages (thread_id, sender_type, user_id, client_id, message) VALUES (?, 'server', NULL, ?, ?)");
+                $ins3->execute([(int)$tid, $clientId, $message]);
+            } catch (Exception $e2) { /* non-fatal */ }
         }
         echo json_encode(['ok'=> $okForward]);
     } catch (Exception $e) {
@@ -618,6 +719,9 @@ if ($action === 'im_send') {
       <button class="nav-link" id="tab-servers" data-bs-toggle="pill" data-bs-target="#pane-servers" type="button" role="tab">Servers</button>
     </li>
     <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-clients" data-bs-toggle="pill" data-bs-target="#pane-clients" type="button" role="tab">Clients</button>
+    </li>
+    <li class="nav-item" role="presentation">
       <button class="nav-link" id="tab-sessions" data-bs-toggle="pill" data-bs-target="#pane-sessions" type="button" role="tab">Sessions</button>
     </li>
     <li class="nav-item" role="presentation">
@@ -642,7 +746,7 @@ if ($action === 'im_send') {
     <div class="tab-pane fade" id="pane-servers" role="tabpanel" aria-labelledby="tab-servers">
       <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center">
-          <span>Known Servers (replica DB)</span>
+          <span>Known Servers</span>
           <div>
             <button class="btn btn-sm btn-outline-secondary" id="btn-test-info">Test Info</button>
             <button class="btn btn-sm btn-outline-secondary" id="btn-test-sync">Test Sync</button>
@@ -655,6 +759,7 @@ if ($action === 'im_send') {
               <input type="number" min="1" step="1" value="5" id="sync-interval-min" class="form-control form-control-sm" style="width:70px" title="Minutes">
               <span class="ms-1 small text-secondary">min</span>
             </div>
+            <button class="btn btn-sm btn-info ms-2" onclick="openServerChat()">Open Server Chat</button>
           </div>
         </div>
         <div class="card-body">
@@ -666,42 +771,68 @@ if ($action === 'im_send') {
           </div>
           <div class="row">
             <div class="col-12">
-              <div class="row mb-3">
-                <div class="col-md-8">
-                  <div class="input-group input-group-sm">
-                    <span class="input-group-text">Client ID</span>
-                    <input id="im-client-id" class="form-control" placeholder="client_id">
-                    <span class="input-group-text">Message</span>
-                    <input id="im-text" class="form-control" placeholder="Type a message">
-                    <button class="btn btn-success" id="btn-send-im">Send</button>
-                  </div>
-                </div>
-                <div class="col-md-4">
-                  <div class="input-group input-group-sm">
-                    <span class="input-group-text">Exec</span>
-                    <input id="exec-client-id" class="form-control" placeholder="client_id">
-                    <input id="exec-cmd" class="form-control" placeholder="cmd">
-                    <button class="btn btn-warning" id="btn-exec">Run</button>
-                  </div>
-                </div>
-              </div>
-              <div class="d-flex gap-2 mb-2">
-                <span class="badge bg-secondary" id="replica-count-clients">Clients: 0</span>
-                <span class="badge bg-secondary" id="replica-count-sessions">Sessions: 0</span>
-                <span class="badge bg-secondary" id="replica-count-captures">Captures: 0</span>
-                <span class="badge bg-secondary" id="replica-count-messages">Messages: 0</span>
-                <span class="badge bg-secondary" id="replica-count-fileops">FileOps: 0</span>
-                <span class="badge bg-secondary" id="replica-count-security">Security: 0</span>
-              </div>
               <div class="table-responsive">
-                <table class="table table-sm" id="replica-clients-table">
+                <table class="table table-sm" id="servers-table">
                   <thead><tr>
-                    <th>Client ID</th><th>Hostname</th><th>Platform</th><th>Status</th><th>Last Seen</th><th>IP</th><th>User</th><th>MAC</th><th>Uptime</th><th>Actions</th>
+                    <th>Server ID</th>
+                    <th>Name</th>
+                    <th>Host name</th>
+                    <th>Internal IP</th>
+                    <th>External IP</th>
+                    <th>MAC</th>
+                    <th>User</th>
+                    <th>Status</th>
+                    <th>Uptime</th>
+                    <th>Base URL</th>
+                    <th>Last Seen</th>
+                    <th>Last Sync</th>
+                    <th>Actions</th>
                   </tr></thead>
                   <tbody></tbody>
                 </table>
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Clients -->
+    <div class="tab-pane fade" id="pane-clients" role="tabpanel" aria-labelledby="tab-clients">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span>Clients</span>
+          <div class="d-flex align-items-center">
+            <div class="input-group input-group-sm me-2" style="width:520px">
+              <span class="input-group-text">Client ID</span>
+              <input id="im-client-id" class="form-control" placeholder="client_id">
+              <span class="input-group-text">Message</span>
+              <input id="im-text" class="form-control" placeholder="Type a message">
+              <button class="btn btn-success" id="btn-send-im">Send</button>
+            </div>
+            <div class="input-group input-group-sm" style="width:420px">
+              <span class="input-group-text">Exec</span>
+              <input id="exec-client-id" class="form-control" placeholder="client_id">
+              <input id="exec-cmd" class="form-control" placeholder="cmd">
+              <button class="btn btn-warning" id="btn-exec">Run</button>
+            </div>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="d-flex gap-2 mb-2">
+            <span class="badge bg-secondary" id="replica-count-clients">Clients: 0</span>
+            <span class="badge bg-secondary" id="replica-count-sessions">Sessions: 0</span>
+            <span class="badge bg-secondary" id="replica-count-captures">Captures: 0</span>
+            <span class="badge bg-secondary" id="replica-count-messages">Messages: 0</span>
+            <span class="badge bg-secondary" id="replica-count-fileops">FileOps: 0</span>
+            <span class="badge bg-secondary" id="replica-count-security">Security: 0</span>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-sm" id="replica-clients-table">
+              <thead><tr>
+                <th>Client ID</th><th>Hostname</th><th>Platform</th><th>Status</th><th>Last Seen</th><th>IP</th><th>User</th><th>MAC</th><th>Uptime</th><th>Actions</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -1114,21 +1245,63 @@ function loadReplica(){
   $.getJSON('employeemanagementsystem.php?action=replica_overview', function(r){
     if (!r || !r.ok) { $('#servers-info').text('Replica load failed'); return; }
     $('#servers-info').text('Last sync at: ' + (r.last_sync_at || 'never'));
+    // Servers table enriched with live server info
+    $.getJSON('employeemanagementsystem.php?action=info', function(info){
+      const live = (typeof info === 'string') ? {} : info;
+      const sv = (live && live.server) ? live.server : {};
+      const serversBody = $('#servers-table tbody'); if (serversBody.length){ serversBody.empty(); (r.servers||[]).forEach(function(s){
+        const uptime = sv.uptime_seconds ? Math.round(sv.uptime_seconds/3600)+'h' : '';
+        const actions = '<div class="btn-group btn-group-sm" role="group">'
+          + '<button class="btn btn-outline-secondary" onclick="postAdmin(\'reboot\', {client_id:\'__server__\'})">Reboot</button>'
+          + '<button class="btn btn-outline-secondary" onclick="postAdmin(\'shutdown\', {client_id:\'__server__\'})">Shutdown</button>'
+          + '<button class="btn btn-outline-primary" onclick="postAdmin(\'os_update_check\', {client_id:\'__server__\'})">Check OS</button>'
+          + '<button class="btn btn-primary" onclick="postAdmin(\'os_update_apply\', {client_id:\'__server__\'})">Apply OS</button>'
+          + '<button class="btn btn-info" onclick="openServerChat()">Server Chat</button>'
+          + '</div>';
+        serversBody.append('<tr>'+
+          '<td>'+safe(s.id)+'</td>'+
+          '<td>'+safe(s.name)+'</td>'+
+          '<td>'+safe(sv.hostname||'')+'</td>'+
+          '<td>'+safe(sv.internal_ip||'')+'</td>'+
+          '<td>'+safe(sv.external_ip||'')+'</td>'+
+          '<td>'+safe(sv.mac_address||'')+'</td>'+
+          '<td>'+safe(sv.logged_in_user||'')+'</td>'+
+          '<td>'+safe(sv.status||'')+'</td>'+
+          '<td>'+uptime+'</td>'+
+          '<td>'+safe(s.base_url)+'</td>'+
+          '<td>'+safe(sv.last_seen||'')+'</td>'+
+          '<td>'+safe(s.last_sync_at||'')+'</td>'+
+          '<td>'+actions+'</td>'+
+        '</tr>');
+      }); }
+    }).fail(function(){
+      const serversBody = $('#servers-table tbody'); if (serversBody.length){ serversBody.empty(); (r.servers||[]).forEach(function(s){
+        serversBody.append('<tr>'+
+          '<td>'+safe(s.id)+'</td>'+
+          '<td>'+safe(s.name)+'</td>'+
+          '<td></td><td></td><td></td><td></td><td></td><td></td><td></td>'+
+          '<td>'+safe(s.base_url)+'</td>'+
+          '<td></td>'+
+          '<td>'+safe(s.last_sync_at||'')+'</td>'+
+          '<td><button class="btn btn-sm btn-info" onclick="openServerChat()">Server Chat</button></td>'+
+        '</tr>');
+      }); }
+    });
+    // Clients table
     $('#replica-count-clients').text('Clients: ' + (r.clients_count||0));
     $('#replica-count-sessions').text('Sessions: ' + (r.sessions_count||0));
     $('#replica-count-captures').text('Captures: ' + (r.captures_count||0));
     $('#replica-count-messages').text('Messages: ' + (r.messages_count||0));
     $('#replica-count-fileops').text('FileOps: ' + (r.fileops_count||0));
     $('#replica-count-security').text('Security: ' + (r.security_count||0));
-    const tbody = $('#replica-clients-table tbody'); tbody.empty();
-    (r.clients||[]).forEach(function(c){
+    const tbody = $('#replica-clients-table tbody'); if(tbody.length){ tbody.empty(); (r.clients||[]).forEach(function(c){
       const cid = safe(c.client_id);
       const actions = '<div class="btn-group btn-group-sm" role="group">'
         + '<button class="btn btn-outline-secondary" onclick="sendAction(\'reboot\', \'_'+cid+'\')">Reboot</button>'
         + '<button class="btn btn-outline-secondary" onclick="sendAction(\'shutdown\', \'_'+cid+'\')">Shutdown</button>'
         + '<button class="btn btn-outline-primary" onclick="sendAction(\'os_update_check\', \'_'+cid+'\')">Check OS</button>'
         + '<button class="btn btn-primary" onclick="sendAction(\'os_update_apply\', \'_'+cid+'\')">Apply OS</button>'
-        + '<button class="btn btn-success" onclick="openChat(\'_'+cid+'\')">Chat</button>'
+        + '<button class="btn btn-success" onclick="openClientChat(\'_'+cid+'\')">Client Chat</button>'
         + '</div>';
       tbody.append('<tr>'+
         '<td>'+safe(c.client_id)+'</td>'+
@@ -1142,7 +1315,7 @@ function loadReplica(){
         '<td>'+ (c.uptime_seconds? Math.round(c.uptime_seconds/3600)+'h':'' ) +'</td>'+
         '<td>'+actions.replaceAll('_'+cid, cid) +'</td>'+
       '</tr>');
-    });
+    }); }
   });
 }
 
@@ -1157,9 +1330,19 @@ function sendAction(action, clientId){
 }
 
 let imClient = null; let imTimer = null; let imModalRef = null;
-function openChat(clientId){
-  imClient = clientId;
-  const title = document.getElementById('imClient'); if (title) title.textContent = clientId;
+function openClientChat(clientId){
+  imClient = 'client:'+clientId;
+  const title = document.getElementById('imClient'); if (title) title.textContent = 'Client '+clientId;
+  const body = $('#imBody'); body && body.empty();
+  const panel = document.getElementById('imPanel'); const mini = document.getElementById('imMini');
+  if (panel) panel.style.display = 'block'; if (mini) mini.style.display = 'none';
+  loadImHistory();
+  if (imTimer) clearInterval(imTimer);
+  imTimer = setInterval(loadImHistory, 2000);
+}
+function openServerChat(){
+  imClient = 'server:__server__';
+  const title = document.getElementById('imClient'); if (title) title.textContent = 'Server';
   const body = $('#imBody'); body && body.empty();
   const panel = document.getElementById('imPanel'); const mini = document.getElementById('imMini');
   if (panel) panel.style.display = 'block'; if (mini) mini.style.display = 'none';
@@ -1169,22 +1352,40 @@ function openChat(clientId){
 }
 function loadImHistory(){
   if (!imClient) return;
-  $.getJSON('employeemanagementsystem.php?action=im_history&client_id='+encodeURIComponent(imClient), function(r){
+  const isServer = imClient.startsWith('server:');
+  const rawId = imClient.split(':')[1] || '';
+  const fill = function(r){
     if (!r || !r.ok) return;
     const body = $('#imBody'); if (!body) return;
     body.empty();
     r.messages.forEach(m => {
-      const who = (m.sender_type==='user') ? 'You' : 'Client';
+      const who = (m.sender_type==='user' || m.sender_type==='server') ? (m.sender_type==='server' ? 'Server' : 'You') : (isServer ? 'Server' : 'Client');
       const item = $('<div class="im-msg"></div>').text('['+safe(m.created_at)+'] '+who+': '+safe(m.message));
       body.append(item);
     });
     body.scrollTop(body.prop('scrollHeight'));
-  });
+  };
+  // Prefer live source-of-truth; fall back to replica if not available
+  const action = isServer ? 'im_live_history_server' : 'im_live_history';
+  const q = isServer ? '' : ('&client_id='+encodeURIComponent(rawId));
+  $.getJSON('employeemanagementsystem.php?action='+action+q)
+    .done(fill)
+    .fail(function(){
+      if (!isServer) {
+        $.getJSON('employeemanagementsystem.php?action=im_history&client_id='+encodeURIComponent(rawId), fill);
+      }
+    });
 }
 $(document).on('click', '#imSendBtn', function(){
   const text = $('#imInput').val();
   if (!text || !imClient) return;
-  $.ajax({ url: 'employeemanagementsystem.php?action=im_send', method: 'POST', contentType: 'application/json', data: JSON.stringify({client_id: imClient, message: text}), success: function(){ $('#imInput').val(''); loadImHistory(); } });
+  const isServer = imClient.startsWith('server:');
+  const rawId = imClient.split(':')[1] || '';
+  if (isServer){
+    $.ajax({ url: 'employeemanagementsystem.php?action=im_send_server', method: 'POST', contentType: 'application/json', data: JSON.stringify({message: text}), success: function(){ $('#imInput').val(''); loadImHistory(); } });
+  } else {
+    $.ajax({ url: 'employeemanagementsystem.php?action=im_send', method: 'POST', contentType: 'application/json', data: JSON.stringify({client_id: rawId, message: text}), success: function(){ $('#imInput').val(''); loadImHistory(); } });
+  }
 });
 </script>
 </body>

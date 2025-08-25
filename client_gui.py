@@ -1262,7 +1262,7 @@ class MonitoringClient:
             
             # Send to server
             if self._send_data(screen_capture):
-                logger.debug(f"Screen capture sent: {len(img_byte_arr)} bytes")
+                logger.debug(f"Screen capture sent: {len(img_bytes)} bytes")
             else:
                 logger.error("Failed to send screen capture")
                 

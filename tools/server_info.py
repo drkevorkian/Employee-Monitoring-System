@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 import json
+import urllib.request
 import os
 import sys
 from pathlib import Path
 import configparser
 import platform
+import socket
+import time
+import json
+import getpass
+from datetime import datetime
 
 # Ensure project root is on sys.path
 THIS_FILE = Path(__file__).resolve()
@@ -97,6 +103,59 @@ def main():
                 'platform_version': platform.version(),
                 'python_version': sys.version.split()[0],
             }
+
+        # Server host details (best-effort, no extra deps)
+        try:
+            hostname = socket.gethostname()
+        except Exception:
+            hostname = platform.node() or 'unknown'
+        # internal IPv4 best-effort
+        internal_ip = ''
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(('8.8.8.8', 80))
+            internal_ip = s.getsockname()[0]
+        except Exception:
+            try:
+                internal_ip = socket.gethostbyname(hostname)
+            except Exception:
+                internal_ip = ''
+        finally:
+            try:
+                s.close()  # type: ignore
+            except Exception:
+                pass
+        # external IPv4 via ipify (best-effort, short timeout)
+        external_ip = ''
+        try:
+            with urllib.request.urlopen('https://api.ipify.org/', timeout=3) as resp:
+                external_ip = (resp.read().decode('utf-8', errors='ignore') or '').strip()
+                # basic sanity check
+                if not external_ip or len(external_ip) > 64:
+                    external_ip = ''
+        except Exception:
+            external_ip = ''
+
+        # mac address
+        try:
+            mac_int = __import__('uuid').getnode()
+            mac_address = ':'.join(f"{(mac_int >> ele) & 0xff:02x}" for ele in range(40, -1, -8))
+        except Exception:
+            mac_address = ''
+        # current user
+        try:
+            logged_in_user = getpass.getuser()
+        except Exception:
+            logged_in_user = ''
+        # uptime seconds
+        uptime_seconds = None
+        try:
+            import psutil  # type: ignore
+            boot_time = getattr(psutil, 'boot_time', lambda: None)()
+            if boot_time:
+                uptime_seconds = int(time.time() - boot_time)
+        except Exception:
+            uptime_seconds = None
         try:
             db_stats = db.get_database_stats()
         except Exception:
@@ -210,6 +269,16 @@ def main():
                 'stats': db_stats,
                 'active_clients_count': active_count,
                 'active_clients_sample': sample_clients,
+            },
+            'server': {
+                'hostname': hostname,
+                'internal_ip': internal_ip,
+                'external_ip': external_ip,
+                'mac_address': mac_address,
+                'logged_in_user': logged_in_user,
+                'uptime_seconds': uptime_seconds,
+                'status': 'online',
+                'last_seen': datetime.utcnow().isoformat(timespec='seconds')+'Z',
             },
             'clients': clients,
             'sessions': sessions,

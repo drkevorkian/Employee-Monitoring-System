@@ -235,6 +235,22 @@ class MonitoringServer:
                             text = str(data.get('message') or '')
                             if text:
                                 ok, _mid = server_ref.send_chat_message(client_id, text)
+                                # Also nudge GUI to open/focus popup immediately for server-side visibility
+                                try:
+                                    if server_ref and hasattr(server_ref, 'gui_callback') and server_ref.gui_callback:
+                                        import datetime as _dt
+                                        server_ref.gui_callback('open_message_popup', client_id, text, _dt.datetime.now().isoformat())
+                                except Exception:
+                                    pass
+                            else:
+                                ok = False
+                        elif cmd == 'server_chat':
+                            text = str(data.get('message') or '')
+                            if text:
+                                try:
+                                    ok = bool(server_ref.send_server_chat(text))
+                                except Exception:
+                                    ok = False
                             else:
                                 ok = False
                         elif cmd == 'exec' and client_id:
@@ -1026,8 +1042,8 @@ class MonitoringServer:
                 # Notify GUI to open/focus popup and append message to history for visual parity with web/client
                 try:
                     if self.gui_callback:
-                        # Explicitly notify GUI that the server sent a message so it can open/focus the popup
-                        self.gui_callback('server_sent_message', client_id, message, datetime.now().isoformat())
+                        # Ask GUI to open/focus popup and append the server message
+                        self.gui_callback('open_message_popup', client_id, message, datetime.now().isoformat())
                 except Exception:
                     pass
             except Exception:
@@ -1050,6 +1066,38 @@ class MonitoringServer:
         except Exception as e:
             logger.error(f"Failed to send chat message: {e}")
             return False, ""
+
+    def send_server_chat(self, message: str) -> bool:
+        """Record a server-targeted chat message (from web UI/admin) and surface it.
+
+        Currently stores the message in the database under a reserved client_id
+        to keep it distinct from client threads. This can be extended to drive a
+        dedicated server chat UI panel.
+        """
+        try:
+            message_id = str(uuid.uuid4())
+            now_iso = datetime.now().isoformat()
+            # Use a reserved identifier to distinguish from real client IDs
+            server_thread_id = "__server__"
+            self.database.store_chat_message(
+                client_id=server_thread_id,
+                message=message,
+                timestamp=now_iso,
+                direction='web_to_server',
+                message_id=message_id,
+                awaiting_delivery=False
+            )
+            logger.info(f"Server chat message recorded: {message}")
+            # Optional: notify GUI via callback/signal in future
+            try:
+                if self.gui_callback:
+                    self.gui_callback('server_chat', server_thread_id, message, now_iso)
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            logger.error(f"Failed to record server chat: {e}")
+            return False
 
     def _deliver_queued_messages(self, client_id: str) -> None:
         """Attempt to deliver queued messages to a client that just connected."""
@@ -2410,6 +2458,9 @@ class MonitoringServerGUI(QMainWindow):
     file_list_response_signal = Signal(str, str, list, list)  # client_id, directory_path, files, directories
     file_content_response_signal = Signal(str, str, str, int, bool)  # client_id, file_path, content, file_size, is_binary
     file_operation_response_signal = Signal(str, str, str, str, str)  # client_id, operation, file_path, status, message
+    # Emitted to show a server-originated message and ensure popup opens (GUI thread)
+    server_message_signal = Signal(str, str, str)  # client_id, message, timestamp
+    message_status_signal = Signal(str, str, str)  # client_id, status, message_id
     # Fired when the server itself sends a message so the GUI can reflect it immediately
     server_sent_message_signal = Signal(str, str, str)  # client_id, message, timestamp
     
@@ -2436,6 +2487,8 @@ class MonitoringServerGUI(QMainWindow):
         self.file_list_response_signal.connect(self._handle_file_list_response_safe)
         self.file_content_response_signal.connect(self._handle_file_content_response_safe)
         self.file_operation_response_signal.connect(self._handle_file_operation_response_safe)
+        self.server_message_signal.connect(self._handle_server_message_safe)
+        self.message_status_signal.connect(self._handle_message_status_safe)
         self.server_sent_message_signal.connect(self._handle_server_sent_message_safe)
         
         # Verify environment/dependencies early; log warnings only.
@@ -3468,35 +3521,18 @@ class MonitoringServerGUI(QMainWindow):
                 # Emit signal for thread-safe GUI update
                 self.chat_message_signal.emit(client_id, message, timestamp)
                 logger.info(f"Chat message signal emitted for client {client_id}")
-            elif update_type == 'server_sent_message':
-                # Ensure a popup exists and append the message prefixed as Server
+            elif update_type == 'open_message_popup':
+                # Hop to GUI thread to open/append to avoid UI freezes
                 message, timestamp = args
-                try:
-                    self._show_messaging_popup(client_id)
-                except Exception:
-                    pass
-                # Emit signal so append happens on the GUI thread
-                self.server_sent_message_signal.emit(client_id, message, timestamp)
+                self.server_message_signal.emit(client_id, message, timestamp)
             elif update_type == 'chat_response':
                 message, timestamp = args
                 self.chat_response_signal.emit(client_id, message, timestamp)
                 logger.info(f"Chat response signal emitted for client {client_id}")
             elif update_type == 'message_status':
                 status, message_id = args
-                # Update any open messaging popup's status label to reflect state
-                try:
-                    if hasattr(self, 'messaging_popups') and client_id in self.messaging_popups:
-                        popup = self.messaging_popups[client_id]
-                        if status == 'delivered':
-                            html = "<span style='color:rgba(255,0,0,0.7)'>◯✓ ◯✓</span>"
-                        elif status == 'read':
-                            html = "<span style='color:rgba(255,0,0,0.7)'>●✓ ●✓</span>"
-                        else:
-                            html = "<span style='color:rgba(255,0,0,0.7)'>◯✓</span>"
-                        if hasattr(popup, 'status_label'):
-                            popup.status_label.setText(html)
-                except Exception as pe:
-                    logger.debug(f"Failed to update popup status UI: {pe}")
+                # Hop to GUI thread to avoid cross-thread UI creation
+                self.message_status_signal.emit(client_id, status, message_id)
             else:
                 logger.warning(f"Unknown update type: {update_type}")
                 
@@ -3559,6 +3595,37 @@ class MonitoringServerGUI(QMainWindow):
         except Exception as e:
             logger.error(f"Error in safe handle_chat_response: {e}")
     
+    def _handle_server_message_safe(self, client_id: str, message: str, timestamp: str):
+        """Open/focus the messaging popup and append server text (GUI thread)."""
+        try:
+            try:
+                self._show_messaging_popup(client_id)
+            except Exception:
+                pass
+            if hasattr(self, 'messaging_popups') and client_id in self.messaging_popups:
+                popup = self.messaging_popups[client_id]
+                current = popup.history.toPlainText()
+                new_text = (current + ("\n\n" if current else "")) + f"[{timestamp}] Server: {message}"
+                popup.history.setPlainText(new_text)
+                popup.history.verticalScrollBar().setValue(popup.history.verticalScrollBar().maximum())
+        except Exception as e:
+            logger.error(f"Error in safe handle_server_message: {e}")
+
+    def _handle_message_status_safe(self, client_id: str, status: str, message_id: str):
+        """Update popup status label safely on the GUI thread."""
+        try:
+            if hasattr(self, 'messaging_popups') and client_id in self.messaging_popups:
+                popup = self.messaging_popups[client_id]
+                if status == 'delivered':
+                    html = "<span style='color:rgba(255,0,0,0.7)'>◯✓ ◯✓</span>"
+                elif status == 'read':
+                    html = "<span style='color:rgba(255,0,0,0.7)'>●✓ ●✓</span>"
+                else:
+                    html = "<span style='color:rgba(255,0,0,0.7)'>◯✓</span>"
+                if hasattr(popup, 'status_label'):
+                    popup.status_label.setText(html)
+        except Exception as e:
+            logger.debug(f"Failed to update message status UI safely: {e}")
     def _handle_server_sent_message_safe(self, client_id: str, message: str, timestamp: str):
         """Thread-safe append for server-originated messages and ensure popup is visible."""
         try:
