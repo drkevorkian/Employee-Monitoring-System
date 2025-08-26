@@ -125,16 +125,8 @@ def main():
                 s.close()  # type: ignore
             except Exception:
                 pass
-        # external IPv4 via ipify (best-effort, short timeout)
+        # external IPv4 omitted here; server/client report their own external IPs now
         external_ip = ''
-        try:
-            with urllib.request.urlopen('https://api.ipify.org/', timeout=3) as resp:
-                external_ip = (resp.read().decode('utf-8', errors='ignore') or '').strip()
-                # basic sanity check
-                if not external_ip or len(external_ip) > 64:
-                    external_ip = ''
-        except Exception:
-            external_ip = ''
 
         # mac address
         try:

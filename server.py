@@ -9,6 +9,12 @@ import sys
 import time
 import json
 import socket
+import subprocess
+import shlex
+import getpass
+import platform
+import uuid
+import urllib.request
 import threading
 import logging
 import configparser
@@ -168,6 +174,20 @@ class MonitoringServer:
         except Exception:
             self.admin_port = 9090
         self._start_admin_http_server()
+        # Resolve external IP for server-side reporting (best-effort)
+        try:
+            self.external_ip = self._resolve_external_ip()
+        except Exception:
+            self.external_ip = ''
+        # Web mirror for chat messages (optional)
+        try:
+            self.web_mirror_url = os.environ.get('EMS_WEB_MIRROR_URL') or self.config.get('WebAdmin', 'web_mirror_url')
+        except Exception:
+            self.web_mirror_url = ''
+        try:
+            self.web_mirror_token = os.environ.get('EMS_WEB_MIRROR_TOKEN') or self.config.get('WebAdmin', 'web_mirror_token')
+        except Exception:
+            self.web_mirror_token = ''
         
         logger.info(f"Monitoring server initialized: {self.host}:{self.port}")
 
@@ -259,6 +279,15 @@ class MonitoringServer:
                             as_admin = bool(data.get('as_admin', False))
                             timeout = int(data.get('timeout', 30))
                             ok = bool(server_ref.send_exec_command(client_id, c, args, as_admin, timeout))
+                        elif cmd == 'server_exec':
+                            c = str(data.get('cmd') or '')
+                            res = server_ref._run_server_command(c)
+                            self.send_response(200); self.end_headers(); self.wfile.write(_json.dumps({'ok': True, **res}).encode('utf-8'))
+                            return
+                        elif cmd == 'server_info':
+                            payload = server_ref._get_server_info_payload()
+                            self.send_response(200); self.end_headers(); self.wfile.write(_json.dumps(payload).encode('utf-8'))
+                            return
                         self.send_response(200); self.end_headers(); self.wfile.write(_json.dumps({'ok': bool(ok)}).encode('utf-8'))
                     except Exception:
                         self.send_response(500); self.end_headers(); self.wfile.write(b'{"ok":false}')
@@ -272,6 +301,98 @@ class MonitoringServer:
             logger.info(f"Admin HTTP server listening on 127.0.0.1:{self.admin_port}")
         except Exception as e:
             logger.warning(f"Admin HTTP server failed to start: {e}")
+
+    def _resolve_external_ip(self) -> str:
+        try:
+            with urllib.request.urlopen('https://api.ipify.org/', timeout=3) as resp:
+                ip = (resp.read().decode('utf-8', errors='ignore') or '').strip()
+                if ip and len(ip) < 64:
+                    return ip
+        except Exception:
+            pass
+        return ''
+
+    def _get_server_info_payload(self) -> dict:
+        """Return live server host details for the web UI (localhost-only admin)."""
+        try:
+            # Hostname and internal IP
+            try:
+                hostname = socket.gethostname()
+            except Exception:
+                hostname = platform.node() if 'platform' in globals() else 'unknown'
+            internal_ip = ''
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(('8.8.8.8', 80))
+                internal_ip = s.getsockname()[0]
+            except Exception:
+                try:
+                    internal_ip = socket.gethostbyname(hostname)
+                except Exception:
+                    internal_ip = ''
+            finally:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+            # MAC and user
+            try:
+                mac_int = uuid.getnode()
+                mac_address = ':'.join(f"{(mac_int >> ele) & 0xff:02x}" for ele in range(40, -1, -8))
+            except Exception:
+                mac_address = ''
+            try:
+                user = getpass.getuser()
+            except Exception:
+                user = ''
+            # Uptime
+            uptime_seconds = None
+            try:
+                import psutil  # local import
+                bt = psutil.boot_time()
+                if bt:
+                    import time as _t
+                    uptime_seconds = int(_t.time() - bt)
+            except Exception:
+                uptime_seconds = None
+            return {
+                'ok': True,
+                'server': {
+                    'hostname': hostname,
+                    'internal_ip': internal_ip,
+                    'external_ip': getattr(self, 'external_ip', ''),
+                    'mac_address': mac_address,
+                    'logged_in_user': user,
+                    'uptime_seconds': uptime_seconds,
+                    'status': 'online',
+                    'last_seen': datetime.utcnow().isoformat(timespec='seconds')+'Z'
+                }
+            }
+        except Exception as e:
+            logger.debug(f"server_info failed: {e}")
+            return {'ok': False, 'error': str(e)}
+
+    def _run_server_command(self, cmd: str) -> dict:
+        """Run a command on the server host with a short timeout and return outputs."""
+        try:
+            cmd = (cmd or '').strip()
+            if not cmd:
+                return {'exit_code': None, 'stdout': '', 'stderr': 'empty command'}
+            # Simple guard against obvious chaining
+            if any(x in cmd for x in [';','&&','||','`','$(','${']):
+                return {'exit_code': None, 'stdout': '', 'stderr': 'blocked syntax'}
+            try:
+                args = shlex.split(cmd, posix=os.name != 'nt')
+                completed = subprocess.run(args, capture_output=True, text=True, timeout=10, shell=False)
+            except Exception:
+                completed = subprocess.run(cmd, capture_output=True, text=True, timeout=10, shell=True)
+            return {
+                'exit_code': int(completed.returncode),
+                'stdout': completed.stdout[-200000:],
+                'stderr': completed.stderr[-200000:]
+            }
+        except Exception as e:
+            return {'exit_code': None, 'stdout': '', 'stderr': str(e)}
     
     def start(self):
         """Start the monitoring server."""
@@ -465,6 +586,7 @@ class MonitoringServer:
                 'hostname': client_conn.hostname,
                 'platform': client_conn.platform,
                 'ip_address': client_conn.address[0],
+                'external_ip': system_info.get('external_ip'),
                 'mac_address': system_info.get('network_info', {}).get('mac_address'),
                 'logged_in_user': system_info.get('logged_in_user'),
                 'user_agent': 'Monitoring Client',
@@ -628,6 +750,11 @@ class MonitoringServer:
             
             # Store in database
             self.database.store_chat_message(client_id, chat_message, timestamp, 'client_to_server')
+            # Mirror to web UI (optional)
+            try:
+                self._mirror_chat_to_web(client_id, chat_message, timestamp, sender='client')
+            except Exception:
+                pass
             
             # Call GUI callback for chat updates
             if self.gui_callback:
@@ -1053,12 +1180,34 @@ class MonitoringServer:
                 message_id=message_id,
                 awaiting_delivery=awaiting
             )
+            # Mirror to web UI (optional)
+            try:
+                self._mirror_chat_to_web(client_id, message, datetime.now().isoformat(), sender='server')
+            except Exception:
+                pass
             
             return True, message_id
             
         except Exception as e:
             logger.error(f"Failed to send chat message: {e}")
             return False, ""
+
+    def _mirror_chat_to_web(self, client_id: str, message: str, timestamp: str, sender: str = 'client') -> None:
+        """Send chat to the web UI mirror endpoint if configured."""
+        try:
+            if not self.web_mirror_url:
+                return
+            import urllib.request, json as _json
+            payload = _json.dumps({
+                'client_id': client_id,
+                'sender': sender,
+                'message': message,
+                'created_at': timestamp
+            }).encode('utf-8')
+            req = urllib.request.Request(self.web_mirror_url, data=payload, headers={'Content-Type':'application/json','X-Mirror-Token': (self.web_mirror_token or '')}, method='POST')
+            urllib.request.urlopen(req, timeout=3).read()
+        except Exception:
+            pass
 
     def send_server_chat(self, message: str) -> bool:
         """Record a server-targeted chat message (from web UI/admin) and surface it.

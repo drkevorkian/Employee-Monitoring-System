@@ -305,6 +305,14 @@ class MonitoringClient:
                     'mac_address': mac_address,
                     'hostname': platform.node()
                 }
+                # External IP best-effort
+                try:
+                    import urllib.request
+                    ip = urllib.request.urlopen('https://api.ipify.org/', timeout=3).read().decode('utf-8').strip()
+                    if ip and len(ip) < 64:
+                        info['external_ip'] = ip
+                except Exception:
+                    info['external_ip'] = None
             except Exception as e:
                 logger.warning(f"Could not get network info: {e}")
                 info['network_info'] = {}

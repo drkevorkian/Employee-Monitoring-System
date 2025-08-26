@@ -349,6 +349,9 @@ if ($action === 'info') {
 if ($action === 'admin') {
     header('Content-Type: application/json; charset=utf-8');
     if (!isset($_SESSION['uid'])) { echo json_encode(['ok'=>false]); exit; }
+    // CSRF validation
+    $h = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    if (!isset($_SESSION['csrf']) || !hash_equals($_SESSION['csrf'], $h)) { echo json_encode(['ok'=>false,'error'=>'csrf']); exit; }
     $raw = file_get_contents('php://input');
     if ($raw === false) { $raw = '{}'; }
     $payload = json_decode($raw ?: '{}', true);
@@ -621,6 +624,27 @@ if ($action === 'im_send_server') {
     exit;
 }
 
+if ($action === 'web_exec') {
+    header('Content-Type: application/json; charset=utf-8');
+    if (!isset($_SESSION['uid'])) { echo json_encode(['ok'=>false,'error'=>'auth required']); exit; }
+    $raw = file_get_contents('php://input');
+    $data = json_decode($raw ?: '{}', true);
+    $cmd = isset($data['cmd']) ? (string)$data['cmd'] : '';
+    if ($cmd === '') { echo json_encode(['ok'=>false,'error'=>'cmd required']); exit; }
+    try {
+        $descriptorspec = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        $proc = proc_open($cmd, $descriptorspec, $pipes, $root, null);
+        if (!is_resource($proc)) { echo json_encode(['ok'=>false,'error'=>'proc_open failed']); exit; }
+        $out = stream_get_contents($pipes[1]); $err = stream_get_contents($pipes[2]);
+        foreach ($pipes as $p) { if (is_resource($p)) fclose($p); }
+        $code = proc_close($proc);
+        echo json_encode(['ok'=>true,'exit_code'=>$code,'stdout'=>$out,'stderr'=>$err]);
+    } catch (Exception $e) {
+        echo json_encode(['ok'=>false,'error'=>$e->getMessage()]);
+    }
+    exit;
+}
+
 if ($action === 'im_send') {
     if (!isset($_SESSION['uid'])) { header('Content-Type: application/json'); echo json_encode(['ok'=>false,'error'=>'auth required']); exit; }
     header('Content-Type: application/json; charset=utf-8');
@@ -673,6 +697,8 @@ if ($action === 'im_send') {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Employee Monitoring System</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <?php if (empty($_SESSION['csrf'])) { $_SESSION['csrf'] = bin2hex(random_bytes(16)); } ?>
+  <script>window.CSRF_TOKEN = '<?php echo htmlspecialchars($_SESSION['csrf'], ENT_QUOTES); ?>';</script>
   <style>
     body { background: #0f1115; color: #e5e7eb; }
     .navbar { background: #111827; }
@@ -692,6 +718,19 @@ if ($action === 'im_send') {
   </style>
   <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
   <script>
+    // Attach CSRF header on all AJAX requests by default
+    (function(){
+      if (window.jQuery) {
+        $(document).ajaxSend(function(_e, xhr, settings){
+          try {
+            if (settings && settings.type && settings.type.toUpperCase() === 'POST') {
+              xhr.setRequestHeader('X-CSRF-Token', window.CSRF_TOKEN);
+            }
+          } catch (e) {}
+        });
+      }
+    })();
+
     function postAdmin(cmd, payload, onOk){
       // Send to local admin HTTP on server via PHP relay for security
       $.ajax({
@@ -699,6 +738,7 @@ if ($action === 'im_send') {
         method: 'POST',
         data: JSON.stringify(Object.assign({command: cmd}, payload||{})),
         contentType: 'application/json',
+        headers: {'X-CSRF-Token': window.CSRF_TOKEN},
         success: function(r){ try{ onOk && onOk(r); }catch(e){} },
         error: function(){ alert('Admin command failed'); }
       });
@@ -745,6 +785,9 @@ if ($action === 'im_send') {
     </li>
     <li class="nav-item" role="presentation">
       <button class="nav-link" id="tab-notify" data-bs-toggle="pill" data-bs-target="#pane-notify" type="button" role="tab">Notifications</button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-terminal" data-bs-toggle="pill" data-bs-target="#pane-terminal" type="button" role="tab">Terminal</button>
     </li>
   </ul>
 
@@ -800,6 +843,30 @@ if ($action === 'im_send') {
               </div>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+    <!-- Terminal Tab -->
+    <div class="tab-pane fade" id="pane-terminal" role="tabpanel" aria-labelledby="tab-terminal">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span>Terminal</span>
+          <div class="d-flex gap-2 align-items-center">
+            <select id="term-target" class="form-select form-select-sm" style="width:160px">
+              <option value="server">Server</option>
+              <option value="client">Client</option>
+              <option value="web">Web Server</option>
+            </select>
+            <input id="term-client-id" class="form-control form-control-sm" style="width:260px" placeholder="client_id (when target=Client)">
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="input-group input-group-sm mb-2">
+            <span class="input-group-text">Cmd</span>
+            <input id="term-cmd" class="form-control" placeholder="e.g., whoami">
+            <button class="btn btn-primary" id="term-run">Run</button>
+          </div>
+          <pre id="term-out" class="small" style="background:#0b0f19;color:#9ca3af; padding:8px; border:1px solid #374151; border-radius:4px; min-height:160px; max-height:360px; overflow:auto"></pre>
         </div>
       </div>
     </div>
@@ -997,7 +1064,16 @@ if ($action === 'im_send') {
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-function safe(v){ return (v===null||v===undefined)?'':v; }
+function safe(v){
+  if (v===null || v===undefined) return '';
+  return String(v)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/\//g, '&#x2F;');
+}
 // Chat modal
 const imModalHtml = `
 <style>
@@ -1224,6 +1300,22 @@ $(function(){
       $('#servers-debug').text('info failed: ' + (xhr.responseText || xhr.status));
     });
   });
+  // Terminal run
+  $('#term-run').on('click', function(){
+    const target = $('#term-target').val();
+    const cmd = ($('#term-cmd').val()||'').trim();
+    const cid = ($('#term-client-id').val()||'').trim();
+    if (!cmd) { $('#term-out').text('Enter a command.'); return; }
+    if (target === 'client'){
+      if (!cid){ $('#term-out').text('Provide client_id.'); return; }
+      postAdmin('exec', {client_id: cid, cmd: cmd, args: []}, function(r){ $('#term-out').text(typeof r==='string'?r:JSON.stringify(r)); });
+    } else if (target === 'server'){
+      postAdmin('exec', {client_id: '__server__', cmd: cmd, args: []}, function(r){ $('#term-out').text(typeof r==='string'?r:JSON.stringify(r)); });
+    } else {
+      // web server command: run locally via PHP passthrough
+      $.ajax({ url: 'employeemanagementsystem.php?action=web_exec', method: 'POST', contentType: 'application/json', data: JSON.stringify({cmd: cmd}), success: function(r){ $('#term-out').text(typeof r==='string'?r:JSON.stringify(r)); }, error: function(x){ $('#term-out').text('Web exec failed: '+(x.responseText||x.status)); } });
+    }
+  });
   $('#btn-test-sync').on('click', function(){
     $('#servers-debug').show().text('');
     $.get('employeemanagementsystem.php?action=sync', function(r){
@@ -1252,8 +1344,8 @@ function loadReplica(){
   $.getJSON('employeemanagementsystem.php?action=replica_overview', function(r){
     if (!r || !r.ok) { $('#servers-info').text('Replica load failed'); return; }
     $('#servers-info').text('Last sync at: ' + (r.last_sync_at || 'never'));
-    // Servers table enriched with live server info
-    $.getJSON('employeemanagementsystem.php?action=info', function(info){
+    // Servers table enriched with live server info (admin server_info)
+    $.ajax({ url: 'employeemanagementsystem.php?action=admin', method: 'POST', data: JSON.stringify({command:'server_info'}), contentType: 'application/json' }).done(function(info){
       const live = (typeof info === 'string') ? {} : info;
       const sv = (live && live.server) ? live.server : {};
       const serversBody = $('#servers-table tbody'); if (serversBody.length){ serversBody.empty(); (r.servers||[]).forEach(function(s){
@@ -1261,7 +1353,7 @@ function loadReplica(){
         const actions = '<div class="btn-group btn-group-sm" role="group">'
           + '<button class="btn btn-outline-secondary" onclick="postAdmin(\'reboot\', {client_id:\'__server__\'})">Reboot</button>'
           + '<button class="btn btn-outline-secondary" onclick="postAdmin(\'shutdown\', {client_id:\'__server__\'})">Shutdown</button>'
-          + '<button class="btn btn-outline-primary" onclick="postAdmin(\'os_update_check\', {client_id:\'__server__\'})">Check OS</button>'
+          + '<button class="btn btn-outline-primary" onclick="toggleRowOsInfo('+s.id+')">Check OS</button>'
           + '<button class="btn btn-primary" onclick="postAdmin(\'os_update_apply\', {client_id:\'__server__\'})">Apply OS</button>'
           + '<button class="btn btn-info" onclick="openServerChat()">Server Chat</button>'
           + '<button class="btn btn-outline-primary" onclick="syncServerById('+s.id+')">Sync This Server</button>'
@@ -1283,8 +1375,26 @@ function syncServerById(id){
           '<td>'+safe(sv.last_seen||'')+'</td>'+
           '<td>'+safe(s.last_sync_at||'')+'</td>'+
           '<td>'+actions+'</td>'+
-        '</tr>');
+        '</tr>'+
+        '<tr class="server-os-row" id="server-os-'+safe(s.id)+'" style="display:none"><td colspan="13">\n'
+        + '<pre class="small" style="margin:6px 0;background:#0b0f19;color:#9ca3af;padding:8px;border:1px solid #374151;border-radius:4px;max-height:200px;overflow:auto" id="server-os-pre-'+safe(s.id)+'">Loading…</pre>'
+        + '</td></tr>');
       }); }
+function toggleRowOsInfo(id){
+  const row = document.getElementById('server-os-'+id);
+  if (!row) return;
+  if (row.style.display === 'none'){ row.style.display = ''; fetchServerOsInfo(id); }
+  else { row.style.display = 'none'; }
+}
+function fetchServerOsInfo(id){
+  // Use admin server_info for consistent data
+  $.ajax({ url:'employeemanagementsystem.php?action=admin', method:'POST', data: JSON.stringify({command:'server_info'}), contentType:'application/json'}).done(function(r){
+    let out = (typeof r === 'string') ? r : JSON.stringify(r, null, 2);
+    $('#server-os-pre-'+id).text(out);
+  }).fail(function(xhr){
+    $('#server-os-pre-'+id).text('Failed to load OS info: ' + (xhr.responseText || xhr.status));
+  });
+}
     }).fail(function(){
       const serversBody = $('#servers-table tbody'); if (serversBody.length){ serversBody.empty(); (r.servers||[]).forEach(function(s){
         serversBody.append('<tr>'+

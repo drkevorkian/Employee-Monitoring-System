@@ -131,6 +131,7 @@ class SecureDatabase:
                     hostname TEXT NOT NULL,
                     platform TEXT NOT NULL,
                     ip_address TEXT NOT NULL,
+                    external_ip TEXT,
                     mac_address TEXT,
                     logged_in_user TEXT,
                     user_agent TEXT,
@@ -317,6 +318,8 @@ class SecureDatabase:
                     self.conn.execute("ALTER TABLE clients ADD COLUMN logged_in_user TEXT")
                 if 'uptime_seconds' not in client_cols:
                     self.conn.execute("ALTER TABLE clients ADD COLUMN uptime_seconds INTEGER")
+                if 'external_ip' not in client_cols:
+                    self.conn.execute("ALTER TABLE clients ADD COLUMN external_ip TEXT")
             except Exception:
                 pass
             self.conn.commit()
