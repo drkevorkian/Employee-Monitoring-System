@@ -43,6 +43,9 @@ exports/
 # Local app data
 .gpt5-appdata/
 
+# PHP file manager (password hash — do not commit)
+.fm_settings.json
+
 # Installer artifacts
 config/windows_service.json
 config/com.employeemonitoring.server.plist
